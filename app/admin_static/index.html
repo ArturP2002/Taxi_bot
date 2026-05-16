@@ -1,0 +1,714 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no"/>
+  <title>DaBro Taxi — Admin</title>
+  <script src="https://telegram.org/js/telegram-web-app.js"></script>
+  <style>
+    :root{--bg:#0d1117;--surface:#161b22;--surface2:#1c2129;--border:#30363d;--gold:#f5c518;--gold-dim:#b8960f;--text:#e6edf3;--text-dim:#8b949e;--success:#3fb950;--danger:#f85149;--info:#58a6ff;--radius:12px}
+    *{box-sizing:border-box;margin:0;padding:0}
+    body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;background:var(--bg);color:var(--text);min-height:100vh;padding-bottom:80px;-webkit-text-size-adjust:100%}
+    .header{background:linear-gradient(135deg,#1a1f2e 0%,#0d1117 100%);padding:16px;text-align:center;border-bottom:1px solid var(--border);position:sticky;top:0;z-index:100}
+    .header h1{font-size:18px;font-weight:700;color:var(--gold);letter-spacing:1px}
+    .header .subtitle{font-size:11px;color:var(--text-dim);margin-top:2px}
+    #auth-status{font-size:12px;padding:6px 12px;margin-top:8px;border-radius:20px;display:inline-block}
+    #auth-status.ok{background:rgba(63,185,80,.15);color:var(--success)}
+    #auth-status.err{background:rgba(248,81,73,.15);color:var(--danger)}
+    #auth-status.loading{background:rgba(245,197,24,.15);color:var(--gold)}
+    .refresh-btn{position:absolute;top:14px;right:14px;background:var(--surface2);border:1px solid var(--border);color:var(--text);width:36px;height:36px;border-radius:50%;font-size:16px;cursor:pointer;-webkit-tap-highlight-color:transparent}
+    .refresh-btn:active{transform:scale(.9)}
+    .tabs{display:flex;overflow-x:auto;gap:4px;padding:10px 12px;background:var(--surface);border-bottom:1px solid var(--border);position:sticky;top:68px;z-index:99;-webkit-overflow-scrolling:touch}
+    .tabs::-webkit-scrollbar{display:none}
+    .tab-btn{flex-shrink:0;padding:8px 14px;border:none;border-radius:20px;background:var(--surface2);color:var(--text-dim);font-size:13px;font-weight:500;cursor:pointer;transition:all .2s;-webkit-tap-highlight-color:transparent}
+    .tab-btn.active{background:var(--gold);color:#000;font-weight:600}
+    .content{padding:12px}
+    .card{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:14px;margin-bottom:10px}
+    .card-header{display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;gap:8px}
+    .card-title{font-size:14px;font-weight:600;color:var(--gold);word-break:break-word}
+    .badge{font-size:11px;padding:3px 8px;border-radius:10px;font-weight:600;white-space:nowrap}
+    .b-new{background:rgba(88,166,255,.15);color:var(--info)}
+    .b-assigned{background:rgba(245,197,24,.15);color:var(--gold)}
+    .b-in_progress{background:rgba(63,185,80,.15);color:var(--success)}
+    .b-completed{background:rgba(139,148,158,.15);color:var(--text-dim)}
+    .b-admin_review{background:rgba(248,81,73,.15);color:var(--danger)}
+    .b-pending{background:rgba(245,197,24,.15);color:var(--gold)}
+    .b-active{background:rgba(63,185,80,.15);color:var(--success)}
+    .b-blocked{background:rgba(248,81,73,.15);color:var(--danger)}
+    .b-confirmed{background:rgba(63,185,80,.15);color:var(--success)}
+    .b-awaiting_admin{background:rgba(245,197,24,.15);color:var(--gold)}
+    .b-suggested{background:rgba(88,166,255,.15);color:var(--info)}
+    .b-failed{background:rgba(248,81,73,.15);color:var(--danger)}
+    .row{display:flex;justify-content:space-between;padding:5px 0;font-size:13px;border-bottom:1px solid rgba(48,54,61,.4)}
+    .row:last-child{border-bottom:none}
+    .row .lbl{color:var(--text-dim)}
+    .row .val{color:var(--text);font-weight:500;text-align:right;max-width:60%;word-break:break-word}
+    .actions{display:flex;gap:8px;margin-top:10px;flex-wrap:wrap}
+    .btn{padding:9px 16px;border:none;border-radius:8px;font-size:13px;font-weight:600;cursor:pointer;transition:all .15s;-webkit-tap-highlight-color:transparent}
+    .btn:active{transform:scale(.95);opacity:.8}
+    .btn-gold{background:var(--gold);color:#000}
+    .btn-success{background:var(--success);color:#fff}
+    .btn-danger{background:var(--danger);color:#fff}
+    .btn-outline{background:transparent;border:1px solid var(--border);color:var(--text)}
+    .form-group{margin-bottom:12px}
+    .form-group label{display:block;font-size:12px;color:var(--text-dim);margin-bottom:4px}
+    .form-group input,.form-group select{width:100%;padding:10px 12px;background:var(--surface2);border:1px solid var(--border);border-radius:8px;color:var(--text);font-size:14px;outline:none;-webkit-appearance:none}
+    .form-group input:focus,.form-group select:focus{border-color:var(--gold)}
+    .stats-grid{display:grid;grid-template-columns:repeat(2,1fr);gap:10px;margin-bottom:16px}
+    .stat-card{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:14px;text-align:center}
+    .stat-card .num{font-size:24px;font-weight:700;color:var(--gold)}
+    .stat-card .slbl{font-size:11px;color:var(--text-dim);margin-top:4px}
+    .empty{text-align:center;padding:40px 20px;color:var(--text-dim);font-size:14px}
+    .loader{text-align:center;padding:30px;color:var(--gold);font-size:14px}
+    .modal-overlay{display:none;position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,.7);z-index:200;align-items:flex-end;justify-content:center}
+    .modal-overlay.visible{display:flex}
+    .modal{background:var(--surface);border-radius:16px 16px 0 0;padding:20px;width:100%;max-width:480px;max-height:80vh;overflow-y:auto;animation:slideUp .3s ease}
+    @keyframes slideUp{from{transform:translateY(100%)}to{transform:translateY(0)}}
+    .modal h3{color:var(--gold);margin-bottom:16px;font-size:16px}
+    .toast{position:fixed;bottom:20px;left:50%;transform:translateX(-50%);background:var(--surface2);border:1px solid var(--border);color:var(--text);padding:10px 20px;border-radius:20px;font-size:13px;z-index:300;opacity:0;transition:opacity .3s;pointer-events:none}
+    .toast.visible{opacity:1}
+    .chips{display:flex;flex-wrap:wrap;gap:6px;margin-top:8px}
+    .chip{padding:6px 14px;border:1px solid var(--border);border-radius:16px;background:var(--surface2);color:var(--text-dim);font-size:12px;font-weight:500;cursor:pointer;transition:all .15s;-webkit-tap-highlight-color:transparent}
+    .chip:active{transform:scale(.93)}
+    .chip-active,.chip:hover{background:var(--gold);color:#000;border-color:var(--gold)}
+    @media(max-width:360px){.stats-grid{grid-template-columns:1fr}.tab-btn{padding:7px 10px;font-size:12px}.card{padding:10px}}
+  </style>
+</head>
+<body>
+  <div class="header" style="position:sticky">
+    <button class="refresh-btn" onclick="renderTab(currentTab);" title="Обновить">↻</button>
+    <h1>DA BRO TAXI</h1>
+    <div class="subtitle">Панель администратора</div>
+    <div id="auth-status" class="loading">Авторизация...</div>
+  </div>
+  <div class="tabs" id="tabs">
+    <button class="tab-btn active" data-tab="dashboard">Главная</button>
+    <button class="tab-btn" data-tab="orders">Заказы</button>
+    <button class="tab-btn" data-tab="drivers">Водители</button>
+    <button class="tab-btn" data-tab="directions">Маршруты</button>
+    <button class="tab-btn" data-tab="queue">Очередь</button>
+    <button class="tab-btn" data-tab="proposals">Заявки</button>
+    <button class="tab-btn" data-tab="payments">Оплаты</button>
+  </div>
+  <div class="content" id="content"></div>
+  <div class="modal-overlay" id="modal-overlay"><div class="modal" id="modal"></div></div>
+  <div class="toast" id="toast"></div>
+<script>
+var tg = window.Telegram.WebApp;
+tg.ready();
+try { tg.expand(); } catch(e){}
+try { tg.setHeaderColor('#0d1117'); } catch(e){}
+try { tg.setBackgroundColor('#0d1117'); } catch(e){}
+
+var content = document.getElementById('content');
+var statusEl = document.getElementById('auth-status');
+var token = localStorage.getItem('admin_jwt') || '';
+var cache = { orders: [], drivers: [], directions: [] };
+
+function api(path, opts) {
+  opts = opts || {};
+  var headers = {
+    'Content-Type': 'application/json',
+    'Cache-Control': 'no-cache, no-store, must-revalidate',
+    'Pragma': 'no-cache',
+    'ngrok-skip-browser-warning': 'true'
+  };
+  if (token) headers['Authorization'] = 'Bearer ' + token;
+  opts.headers = headers;
+  opts.cache = 'no-store';
+  var method = (opts.method || 'GET').toUpperCase();
+  var url = path;
+  if (method === 'GET') {
+    url += (path.indexOf('?') === -1 ? '?' : '&') + '_=' + Date.now();
+  }
+  return fetch(url, opts).then(function(r) {
+    return r.text().then(function(text) {
+      var data;
+      try { data = JSON.parse(text); } catch(e) { data = text; }
+      if (!r.ok) throw new Error(typeof data === 'object' ? (data.detail || JSON.stringify(data)) : String(data));
+      return data;
+    });
+  });
+}
+
+function ensureArray(v) { return Array.isArray(v) ? v : []; }
+
+function auth() {
+  var initData = tg.initData || '';
+  if (!initData) {
+    statusEl.textContent = 'Откройте через Telegram';
+    statusEl.className = 'err';
+    return Promise.resolve(false);
+  }
+  return api('/api/auth/telegram', { method: 'POST', body: JSON.stringify({ init_data: initData }) })
+    .then(function(res) {
+      token = res.access_token;
+      localStorage.setItem('admin_jwt', token);
+      statusEl.textContent = 'Авторизовано';
+      statusEl.className = 'ok';
+      return true;
+    })
+    .catch(function(e) {
+      statusEl.textContent = 'Ошибка: ' + e.message;
+      statusEl.className = 'err';
+      return false;
+    });
+}
+
+function toast(msg) {
+  var t = document.getElementById('toast');
+  t.textContent = msg;
+  if (msg.indexOf('Ошибка') !== -1) {
+    t.style.borderColor = 'var(--danger)';
+    t.style.color = 'var(--danger)';
+  } else {
+    t.style.borderColor = 'var(--border)';
+    t.style.color = 'var(--text)';
+  }
+  t.classList.add('visible');
+  setTimeout(function() { t.classList.remove('visible'); }, 4000);
+}
+
+function openModal(html) {
+  document.getElementById('modal').innerHTML = html;
+  document.getElementById('modal-overlay').classList.add('visible');
+}
+function closeModal() {
+  document.getElementById('modal-overlay').classList.remove('visible');
+}
+document.getElementById('modal-overlay').addEventListener('click', function(e) {
+  if (e.target === e.currentTarget) closeModal();
+});
+
+var currentTab = 'dashboard';
+document.getElementById('tabs').addEventListener('click', function(e) {
+  var btn = e.target;
+  if (!btn.classList.contains('tab-btn')) return;
+  var all = document.querySelectorAll('.tab-btn');
+  for (var i = 0; i < all.length; i++) all[i].classList.remove('active');
+  btn.classList.add('active');
+  currentTab = btn.getAttribute('data-tab');
+  renderTab(currentTab);
+});
+
+function renderTab(tab) {
+  content.innerHTML = '<div class="loader">Загрузка...</div>';
+  var fn = {
+    dashboard: renderDashboard,
+    orders: renderOrders,
+    drivers: renderDrivers,
+    directions: renderDirections,
+    queue: renderQueue,
+    proposals: renderProposals,
+    payments: renderPayments
+  };
+  (fn[tab] || renderDashboard)();
+}
+
+function statusLabel(s) {
+  var m = { new:'Новый', assigned:'Назначен', in_progress:'В пути', completed:'Завершён', admin_review:'На проверке', pending:'Ожидает', confirmed:'Подтверждён', awaiting_admin:'Ждёт админа', active:'Активен', blocked:'Заблокирован', failed:'Ошибка', suggested:'Предложен' };
+  return m[s] || s;
+}
+
+function h(tag, cls, inner) { return '<' + tag + (cls ? ' class="' + cls + '"' : '') + '>' + (inner || '') + '</' + tag + '>'; }
+function row(label, value) { return '<div class="row"><span class="lbl">' + label + '</span><span class="val">' + value + '</span></div>'; }
+function badge(status) { return '<span class="badge b-' + status + '">' + statusLabel(status) + '</span>'; }
+function cardStart(title, status) { return '<div class="card"><div class="card-header"><span class="card-title">' + title + '</span>' + (status ? badge(status) : '') + '</div>'; }
+function cardEnd() { return '</div>'; }
+function stat(num, label) { return '<div class="stat-card"><div class="num">' + num + '</div><div class="slbl">' + label + '</div></div>'; }
+
+// Dashboard
+function renderDashboard() {
+  Promise.all([api('/api/admin/orders'), api('/api/admin/drivers'), api('/api/admin/directions')])
+    .then(function(results) {
+      var orders = ensureArray(results[0]);
+      var drivers = ensureArray(results[1]);
+      var directions = ensureArray(results[2]);
+      cache.orders = orders; cache.drivers = drivers; cache.directions = directions;
+
+      var newO = orders.filter(function(o){return o.status==='new'}).length;
+      var activeO = orders.filter(function(o){return o.status==='in_progress'}).length;
+      var online = drivers.filter(function(d){return d.online}).length;
+      var debt = drivers.reduce(function(s,d){return s + parseFloat(d.balance||0)}, 0);
+
+      var html = '<div class="stats-grid">';
+      html += stat(newO, 'Новые заказы');
+      html += stat(activeO, 'В пути');
+      html += stat(online, 'Онлайн');
+      html += stat(debt.toFixed(0), 'Общий долг');
+      html += '</div>';
+
+      html += cardStart('Последние заказы');
+      var recent = orders.slice(0, 5);
+      if (recent.length === 0) html += '<div class="empty">Нет заказов</div>';
+      for (var i = 0; i < recent.length; i++) {
+        var o = recent[i];
+        html += '<div class="row"><span class="lbl">#' + o.id + ' ' + o.from_location + ' → ' + o.to_location + '</span>' + badge(o.status) + '</div>';
+      }
+      html += cardEnd();
+
+      html += cardStart('Маршруты');
+      if (directions.length === 0) html += '<div class="empty">Нет маршрутов</div>';
+      for (var j = 0; j < directions.length; j++) {
+        var d = directions[j];
+        html += row(d.from_label + ' → ' + d.to_label, d.enabled ? '✓ вкл' : '✗ выкл');
+      }
+      html += cardEnd();
+      content.innerHTML = html;
+    })
+    .catch(function(e) { content.innerHTML = '<div class="empty">Ошибка: ' + e.message + '</div>'; });
+}
+
+// Orders
+function renderOrders() {
+  api('/api/admin/orders').then(function(data) {
+    var orders = ensureArray(data);
+    cache.orders = orders;
+    if (orders.length === 0) { content.innerHTML = '<div class="empty">Заказов пока нет</div>'; return; }
+    var html = '';
+    for (var i = 0; i < orders.length; i++) {
+      var o = orders[i];
+      html += cardStart('Заказ #' + o.id, o.status);
+      html += row('Маршрут', o.from_location + ' → ' + o.to_location);
+      html += row('Мест', o.seats);
+      html += row('Телефон', o.phone);
+      html += row('Подача', (o.pickup_location || '—') + ' ' + (o.pickup_time_text || ''));
+      if ((o.status === 'new' || o.status === 'admin_review') && o.suggestion) {
+        var sg = o.suggestion;
+        html += '<div style="margin:10px 0;padding:10px;background:rgba(245,197,24,.08);border:1px solid var(--gold-dim);border-radius:8px">';
+        html += '<div style="font-size:12px;color:var(--gold);font-weight:600;margin-bottom:6px">🚗 Предложение системы</div>';
+        html += row('Водитель', (sg.driver_name || 'ID:'+sg.driver_id) + (sg.driver_online ? ' 🟢' : ' 🔴'));
+        html += '</div>';
+        html += '<div class="actions">';
+        html += '<button class="btn btn-success" onclick="showConfirmSuggestion(' + o.id + ')">✅ Подтвердить</button>';
+        html += '<button class="btn btn-danger" onclick="doRejectSuggestion(' + o.id + ')">❌ Другой</button>';
+        html += '<button class="btn btn-outline" onclick="showAssignModal(' + o.id + ',' + o.direction_id + ',' + o.seats + ')">Назначить вручную</button>';
+        html += '</div>';
+      } else if (o.status === 'new' || o.status === 'admin_review') {
+        html += '<div class="actions"><button class="btn btn-gold" onclick="showAssignModal(' + o.id + ',' + o.direction_id + ',' + o.seats + ')">Назначить водителя</button></div>';
+      }
+      html += cardEnd();
+    }
+    content.innerHTML = html;
+  }).catch(function(e) { content.innerHTML = '<div class="empty">Ошибка: ' + e.message + '</div>'; });
+}
+
+function showAssignModal(orderId, directionId, seats) {
+  openModal('<div class="loader">Загрузка водителей...</div>');
+  api('/api/admin/drivers').then(function(data) {
+    var drivers = ensureArray(data);
+    cache.drivers = drivers;
+    var eligible = drivers.filter(function(d) { return d.direction_id === directionId && d.status === 'active'; });
+    var opts = '';
+    for (var i = 0; i < eligible.length; i++) {
+      var d = eligible[i];
+      opts += '<option value="' + d.id + '">' + (d.full_name || 'ID:'+d.id) + ' (мест: ' + d.max_seats + ', ' + (d.online ? '🟢' : '🔴') + ')</option>';
+    }
+    var html = '<h3>Назначить на заказ #' + orderId + '</h3>';
+    if (eligible.length === 0) {
+      html += '<div style="padding:10px 0;color:var(--danger);font-size:13px">Нет доступных водителей на этом направлении</div>';
+    }
+    html += '<div class="form-group"><label>Водитель</label><select id="m-driver"><option value="">Выберите...</option>' + opts + '</select></div>';
+    html += '<div class="form-group"><label>Место подачи</label><input id="m-pickup" placeholder="Адрес"/></div>';
+    html += '<div class="form-group"><label>Время подачи</label><input id="m-time" type="time" value="' + _nearestTime() + '"/>';
+    html += '<div class="chips">' + _timeChips() + '</div></div>';
+    html += '<div class="actions"><button class="btn btn-gold" onclick="doAssign(' + orderId + ')">Назначить</button>';
+    html += '<button class="btn btn-outline" onclick="closeModal()">Отмена</button></div>';
+    openModal(html);
+  }).catch(function(e) {
+    openModal('<h3>Ошибка</h3><div style="color:var(--danger)">' + e.message + '</div><div class="actions"><button class="btn btn-outline" onclick="closeModal()">Закрыть</button></div>');
+  });
+}
+
+function _nearestTime() {
+  var now = new Date();
+  var m = now.getMinutes();
+  m = Math.ceil(m / 15) * 15;
+  if (m >= 60) { now.setHours(now.getHours() + 1); m = 0; }
+  var hh = String(now.getHours()).padStart(2, '0');
+  var mm = String(m).padStart(2, '0');
+  return hh + ':' + mm;
+}
+
+function _timeChips() {
+  var times = ['через 10м', 'через 15м', 'через 30м', 'через 1ч'];
+  var html = '';
+  for (var i = 0; i < times.length; i++) {
+    html += '<button class="chip" onclick="document.getElementById(\'m-time\').value=\'' + times[i] + '\';_highlightChip(this)">' + times[i] + '</button>';
+  }
+  return html;
+}
+
+function _highlightChip(el) {
+  var siblings = el.parentNode.querySelectorAll('.chip');
+  for (var i = 0; i < siblings.length; i++) siblings[i].classList.remove('chip-active');
+  el.classList.add('chip-active');
+}
+
+function showConfirmSuggestion(orderId) {
+  var html = '<h3>Подтвердить водителя для #' + orderId + '</h3>';
+  html += '<div class="form-group"><label>Место подачи</label><input id="m-sg-pickup" placeholder="Адрес"/></div>';
+  html += '<div class="form-group"><label>Время подачи</label><input id="m-sg-time" type="time" value="' + _nearestTime() + '"/>';
+  html += '<div class="chips">' + _timeChips().replace(/m-time/g, 'm-sg-time') + '</div></div>';
+  html += '<div class="actions"><button class="btn btn-success" onclick="doConfirmSuggestion(' + orderId + ')">Подтвердить</button>';
+  html += '<button class="btn btn-outline" onclick="closeModal()">Отмена</button></div>';
+  openModal(html);
+}
+
+function doConfirmSuggestion(orderId) {
+  var pickup = document.getElementById('m-sg-pickup').value;
+  var time = document.getElementById('m-sg-time').value;
+  api('/api/admin/orders/' + orderId + '/confirm-suggestion', {
+    method: 'POST',
+    body: JSON.stringify({ pickup_location: pickup || null, pickup_time_text: time || null })
+  }).then(function() {
+    closeModal(); toast('Водитель подтверждён и назначен'); renderOrders();
+  }).catch(function(e) { toast('Ошибка: ' + e.message); });
+}
+
+function doRejectSuggestion(orderId) {
+  api('/api/admin/orders/' + orderId + '/reject-suggestion', {
+    method: 'POST'
+  }).then(function(res) {
+    if (res.next_suggestion) {
+      toast('Предложен другой водитель: ' + (res.next_suggestion.driver_name || 'ID:'+res.next_suggestion.driver_id));
+    } else {
+      toast('Нет других водителей. Назначьте вручную.');
+    }
+    renderOrders();
+  }).catch(function(e) { toast('Ошибка: ' + e.message); });
+}
+
+function doAssign(orderId) {
+  var driverId = +document.getElementById('m-driver').value;
+  var pickup = document.getElementById('m-pickup').value;
+  var time = document.getElementById('m-time').value;
+  if (!driverId) { toast('Выберите водителя'); return; }
+  api('/api/admin/orders/' + orderId + '/assign', {
+    method: 'POST',
+    body: JSON.stringify({ driver_id: driverId, pickup_location: pickup || null, pickup_time_text: time || null })
+  }).then(function() {
+    closeModal(); toast('Водитель назначен'); renderOrders();
+  }).catch(function(e) { toast('Ошибка: ' + e.message); });
+}
+
+// Drivers
+function renderDrivers() {
+  Promise.all([api('/api/admin/drivers'), api('/api/admin/directions')])
+    .then(function(results) {
+      var drivers = ensureArray(results[0]);
+      var directions = ensureArray(results[1]);
+      cache.drivers = drivers; cache.directions = directions;
+      if (drivers.length === 0) { content.innerHTML = '<div class="empty">Нет водителей</div>'; return; }
+      var html = '';
+      for (var i = 0; i < drivers.length; i++) {
+        var d = drivers[i];
+        var dir = null;
+        for (var j = 0; j < directions.length; j++) { if (directions[j].id === d.direction_id) { dir = directions[j]; break; } }
+        var dirName = dir ? (dir.from_label + ' → ' + dir.to_label) : '—';
+        html += cardStart(d.full_name || 'Без имени (ID:' + d.id + ')', d.status);
+        html += row('TG ID', d.telegram_id);
+        html += row('Направление', dirName);
+        html += row('Макс. мест', d.max_seats);
+        html += row('Долг', d.balance + ' ₽');
+        html += row('Онлайн', d.online ? '🟢 Да' : '🔴 Нет');
+        html += '<div class="actions">';
+        if (d.status === 'pending') html += '<button class="btn btn-success" onclick="showApproveDriver(' + d.id + ')">Подтвердить</button>';
+        if (d.status === 'active') {
+          html += '<button class="btn btn-gold" onclick="showChangeDirection(' + d.id + ',' + (d.direction_id || 'null') + ')">Направление</button>';
+          html += '<button class="btn btn-danger" onclick="blockDriver(' + d.id + ')">Блокировать</button>';
+        }
+        if (d.status === 'blocked') html += '<button class="btn btn-success" onclick="showApproveDriver(' + d.id + ')">Разблокировать</button>';
+        html += '</div>';
+        html += cardEnd();
+      }
+      content.innerHTML = html;
+    }).catch(function(e) { content.innerHTML = '<div class="empty">Ошибка: ' + e.message + '</div>'; });
+}
+
+function showApproveDriver(driverId) {
+  var directions = ensureArray(cache.directions);
+  var opts = '<option value="">— Назначить позже —</option>';
+  for (var i = 0; i < directions.length; i++) {
+    var d = directions[i];
+    opts += '<option value="' + d.id + '">' + d.from_label + ' → ' + d.to_label + '</option>';
+  }
+  var seatsChips = '';
+  for (var s = 1; s <= 8; s++) {
+    seatsChips += '<button class="chip' + (s === 6 ? ' chip-active' : '') + '" onclick="document.getElementById(\'m-seats\').value=' + s + ';_highlightChip(this)">' + s + '</button>';
+  }
+  var html = '<h3>Подтвердить водителя #' + driverId + '</h3>';
+  html += '<div class="form-group"><label>Направление (необязательно)</label><select id="m-dir">' + opts + '</select></div>';
+  html += '<div class="form-group"><label>Макс. мест</label><input id="m-seats" type="number" value="6"/>';
+  html += '<div class="chips">' + seatsChips + '</div></div>';
+  html += '<div class="actions"><button class="btn btn-success" onclick="doApproveDriver(' + driverId + ')">Подтвердить</button>';
+  html += '<button class="btn btn-outline" onclick="closeModal()">Отмена</button></div>';
+  openModal(html);
+}
+
+function doApproveDriver(driverId) {
+  var dirVal = document.getElementById('m-dir').value;
+  var seats = +document.getElementById('m-seats').value || 6;
+  var body = { max_seats: seats };
+  if (dirVal) body.direction_id = +dirVal;
+  api('/api/admin/drivers/' + driverId + '/approve', {
+    method: 'POST', body: JSON.stringify(body)
+  }).then(function() { closeModal(); toast('Водитель подтверждён'); renderDrivers(); })
+    .catch(function(e) { toast('Ошибка: ' + e.message); });
+}
+
+function blockDriver(driverId) {
+  api('/api/admin/drivers/' + driverId + '/block', { method: 'POST' })
+    .then(function() { toast('Заблокирован'); renderDrivers(); })
+    .catch(function(e) { toast('Ошибка: ' + e.message); });
+}
+
+function showChangeDirection(driverId, currentDirId) {
+  var directions = ensureArray(cache.directions);
+  if (directions.length === 0) {
+    toast('Нет маршрутов. Сначала создайте маршрут.');
+    return;
+  }
+  var opts = '';
+  for (var i = 0; i < directions.length; i++) {
+    var d = directions[i];
+    var sel = d.id === currentDirId ? ' selected' : '';
+    opts += '<option value="' + d.id + '"' + sel + '>' + d.from_label + ' → ' + d.to_label + (d.enabled ? '' : ' (выкл)') + '</option>';
+  }
+  var html = '<h3>Направление водителя #' + driverId + '</h3>';
+  html += '<div class="form-group"><label>Направление</label><select id="m-chdir">' + opts + '</select></div>';
+  html += '<div class="actions"><button class="btn btn-gold" onclick="doChangeDirection(' + driverId + ')">Сохранить</button>';
+  html += '<button class="btn btn-outline" onclick="closeModal()">Отмена</button></div>';
+  openModal(html);
+}
+
+function doChangeDirection(driverId) {
+  var dirId = +document.getElementById('m-chdir').value;
+  if (!dirId) { toast('Выберите направление'); return; }
+  api('/api/admin/drivers/' + driverId + '/direction', {
+    method: 'POST',
+    body: JSON.stringify({ direction_id: dirId })
+  }).then(function() {
+    closeModal(); toast('Направление изменено'); renderDrivers();
+  }).catch(function(e) { toast('Ошибка: ' + e.message); });
+}
+
+// Directions
+function renderDirections() {
+  api('/api/admin/directions').then(function(data) {
+    var directions = ensureArray(data);
+    cache.directions = directions;
+    var html = '<div class="actions" style="margin-bottom:12px"><button class="btn btn-gold" onclick="showCreateDirection()">+ Новый маршрут</button></div>';
+    if (directions.length === 0) {
+      html += '<div class="empty">Нет маршрутов</div>';
+    }
+    for (var i = 0; i < directions.length; i++) {
+      var d = directions[i];
+      html += cardStart(d.from_label + ' → ' + d.to_label, d.enabled ? 'active' : 'blocked');
+      html += row('Время (мин)', d.estimated_time_min);
+      html += row('Мин. время', d.min_time_percent + '%');
+      html += row('Цена/место', d.price_per_seat + ' ₽');
+      html += row('Фикс. цена', d.fixed_price + ' ₽');
+      html += row('Вместимость', d.vehicle_capacity_default);
+      html += row('Обратный ID', d.reverse_direction_id || '—');
+      html += '<div class="actions">';
+      if (d.enabled) {
+        html += '<button class="btn btn-danger" onclick="toggleDirection(' + d.id + ',false)">Выключить</button>';
+      } else {
+        html += '<button class="btn btn-success" onclick="toggleDirection(' + d.id + ',true)">Включить</button>';
+      }
+      html += '</div>';
+      html += cardEnd();
+    }
+    content.innerHTML = html;
+  }).catch(function(e) {
+    content.innerHTML = '<div class="empty" style="color:#f85149">Ошибка: ' + e.message + '</div>';
+  });
+}
+
+function showCreateDirection() {
+  var etaChips = [30, 45, 60, 90, 120];
+  var etaHtml = '';
+  for (var i = 0; i < etaChips.length; i++) {
+    var v = etaChips[i];
+    var label = v >= 60 ? (v/60) + 'ч' : v + 'м';
+    etaHtml += '<button class="chip' + (v === 60 ? ' chip-active' : '') + '" onclick="document.getElementById(\'m-eta\').value=' + v + ';_highlightChip(this)">' + label + '</button>';
+  }
+  var capChips = '';
+  for (var c = 1; c <= 8; c++) {
+    capChips += '<button class="chip' + (c === 6 ? ' chip-active' : '') + '" onclick="document.getElementById(\'m-cap\').value=' + c + ';_highlightChip(this)">' + c + '</button>';
+  }
+  var html = '<h3>Новый маршрут</h3>';
+  html += '<div class="form-group"><label>Откуда</label><input id="m-from"/></div>';
+  html += '<div class="form-group"><label>Куда</label><input id="m-to"/></div>';
+  html += '<div class="form-group"><label>Время в пути (мин)</label><input id="m-eta" type="number" value="60"/>';
+  html += '<div class="chips">' + etaHtml + '</div></div>';
+  html += '<div class="form-group"><label>Цена за место (₽)</label><input id="m-price" type="number" value="0"/></div>';
+  html += '<div class="form-group"><label>Фикс. цена (₽)</label><input id="m-fixed" type="number" value="0"/></div>';
+  html += '<div class="form-group"><label>Вместимость</label><input id="m-cap" type="number" value="6"/>';
+  html += '<div class="chips">' + capChips + '</div></div>';
+  html += '<div class="actions"><button class="btn btn-gold" onclick="doCreateDirection()">Создать</button>';
+  html += '<button class="btn btn-outline" onclick="closeModal()">Отмена</button></div>';
+  openModal(html);
+}
+
+function toggleDirection(dirId, enabled) {
+  api('/api/admin/directions/' + dirId, {
+    method: 'PATCH',
+    body: JSON.stringify({ enabled: enabled })
+  }).then(function() {
+    toast(enabled ? 'Маршрут включён' : 'Маршрут выключен');
+    renderDirections();
+  }).catch(function(e) { toast('Ошибка: ' + e.message); });
+}
+
+function doCreateDirection() {
+  var fromVal = document.getElementById('m-from').value.trim();
+  var toVal = document.getElementById('m-to').value.trim();
+  if (!fromVal || !toVal) { toast('Заполните откуда и куда'); return; }
+  var body = {
+    from_label: fromVal,
+    to_label: toVal,
+    estimated_time_min: parseInt(document.getElementById('m-eta').value) || 60,
+    price_per_seat: parseFloat(document.getElementById('m-price').value) || 0,
+    fixed_price: parseFloat(document.getElementById('m-fixed').value) || 0,
+    vehicle_capacity_default: parseInt(document.getElementById('m-cap').value) || 6
+  };
+  api('/api/admin/directions', { method: 'POST', body: JSON.stringify(body) })
+    .then(function(res) {
+      closeModal();
+      toast('Маршрут "' + fromVal + ' → ' + toVal + '" создан (ID: ' + res.id + ')');
+      renderDirections();
+    })
+    .catch(function(e) { toast('Ошибка создания: ' + e.message); });
+}
+
+// Queue
+function renderQueue() {
+  api('/api/admin/directions').then(function(data) {
+    var directions = ensureArray(data);
+    cache.directions = directions;
+    if (directions.length === 0) { content.innerHTML = '<div class="empty">Нет маршрутов</div>'; return; }
+    var promises = [];
+    for (var i = 0; i < directions.length; i++) {
+      promises.push(api('/api/admin/directions/' + directions[i].id + '/queue'));
+    }
+    return Promise.all(promises).then(function(queues) {
+      var html = '';
+      for (var i = 0; i < directions.length; i++) {
+        var d = directions[i];
+        var q = ensureArray(queues[i]);
+        html += cardStart(d.from_label + ' → ' + d.to_label);
+        html += '<div class="row"><span class="lbl">В очереди</span><span class="val">' + q.length + ' чел.</span></div>';
+        for (var j = 0; j < q.length; j++) {
+          html += row((j+1) + '. Водитель #' + q[j].driver_id, 'tg: ' + q[j].telegram_id);
+        }
+        if (q.length === 0) html += '<div style="padding:6px 0;color:var(--text-dim);font-size:12px">Пусто</div>';
+        html += cardEnd();
+      }
+      content.innerHTML = html;
+    });
+  }).catch(function(e) { content.innerHTML = '<div class="empty">Ошибка: ' + e.message + '</div>'; });
+}
+
+// Proposals
+function renderProposals() {
+  api('/api/admin/proposals?status=pending').then(function(data) {
+    var proposals = ensureArray(data);
+    if (proposals.length === 0) { content.innerHTML = '<div class="empty">Нет заявок на новые маршруты</div>'; return; }
+    var html = '';
+    for (var i = 0; i < proposals.length; i++) {
+      var p = proposals[i];
+      html += cardStart(p.from_label + ' → ' + p.to_label, 'pending');
+      html += row('Время (мин)', p.estimated_time_min);
+      html += row('Комментарий', p.comment || '—');
+      html += row('Водитель ID', p.proposer_id);
+      html += '<div class="actions">';
+      html += '<button class="btn btn-success" onclick="approveProposal(' + p.id + ')">Одобрить</button>';
+      html += '<button class="btn btn-danger" onclick="rejectProposal(' + p.id + ')">Отклонить</button>';
+      html += '</div>';
+      html += cardEnd();
+    }
+    content.innerHTML = html;
+  }).catch(function(e) { content.innerHTML = '<div class="empty">Ошибка: ' + e.message + '</div>'; });
+}
+
+function approveProposal(id) {
+  api('/api/admin/proposals/' + id + '/approve', { method: 'POST', body: JSON.stringify({}) })
+    .then(function(res) { toast('Маршрут создан (ID: ' + res.direction_id + ')'); renderProposals(); })
+    .catch(function(e) { toast('Ошибка: ' + e.message); });
+}
+
+function rejectProposal(id) {
+  var html = '<h3>Отклонить заявку #' + id + '</h3>';
+  html += '<div class="form-group"><label>Причина (опционально)</label><input id="m-note"/></div>';
+  html += '<div class="actions"><button class="btn btn-danger" onclick="doRejectProposal(' + id + ')">Отклонить</button>';
+  html += '<button class="btn btn-outline" onclick="closeModal()">Отмена</button></div>';
+  openModal(html);
+}
+
+function doRejectProposal(id) {
+  var note = document.getElementById('m-note').value;
+  api('/api/admin/proposals/' + id + '/reject', { method: 'POST', body: JSON.stringify({ note: note || null }) })
+    .then(function() { closeModal(); toast('Заявка отклонена'); renderProposals(); })
+    .catch(function(e) { toast('Ошибка: ' + e.message); });
+}
+
+// Payments
+function renderPayments() {
+  api('/api/admin/payments').then(function(data) {
+    var payments = ensureArray(data);
+    if (payments.length === 0) { content.innerHTML = '<div class="empty">Нет платежей</div>'; return; }
+    var html = '';
+    for (var i = 0; i < payments.length; i++) {
+      var p = payments[i];
+      html += cardStart('Платёж #' + p.id, p.status);
+      html += row('Водитель', '#' + p.driver_id);
+      html += row('Сумма', p.amount + ' ₽');
+      html += row('Провайдер', p.provider || '—');
+      if (p.status === 'pending' || p.status === 'awaiting_admin') {
+        html += '<div class="actions">';
+        html += '<button class="btn btn-gold" onclick="checkPayment(' + p.id + ')">Проверить в ЮKассе</button>';
+        html += '<button class="btn btn-success" onclick="showConfirmPayment(' + p.id + ',\'' + p.amount + '\')">Подтвердить</button>';
+        html += '</div>';
+      }
+      html += cardEnd();
+    }
+    content.innerHTML = html;
+  }).catch(function(e) { content.innerHTML = '<div class="empty">Ошибка: ' + e.message + '</div>'; });
+}
+
+function checkPayment(paymentId) {
+  api('/api/admin/payments/' + paymentId + '/check', { method: 'POST' })
+    .then(function(res) {
+      if (res.status === 'confirmed' || res.status === 'already_confirmed') toast('Платёж подтверждён!');
+      else if (res.status === 'canceled') toast('Платёж отменён');
+      else toast('Статус: ' + res.status);
+      renderPayments();
+    }).catch(function(e) { toast('Ошибка: ' + e.message); });
+}
+
+function showConfirmPayment(paymentId, amount) {
+  var html = '<h3>Подтвердить платёж #' + paymentId + '</h3>';
+  html += '<div class="form-group"><label>Сумма (₽)</label><input id="m-amount" type="number" value="' + amount + '"/></div>';
+  html += '<div class="actions"><button class="btn btn-success" onclick="doConfirmPayment(' + paymentId + ')">Подтвердить</button>';
+  html += '<button class="btn btn-outline" onclick="closeModal()">Отмена</button></div>';
+  openModal(html);
+}
+
+function doConfirmPayment(paymentId) {
+  var amount = document.getElementById('m-amount').value;
+  api('/api/admin/payments/' + paymentId + '/confirm', { method: 'POST', body: JSON.stringify({ amount: +amount }) })
+    .then(function() { closeModal(); toast('Платёж подтверждён'); renderPayments(); })
+    .catch(function(e) { toast('Ошибка: ' + e.message); });
+}
+
+// Init
+auth().then(function(ok) {
+  if (ok !== false) {
+    renderTab('dashboard');
+  }
+});
+</script>
+</body>
+</html>
