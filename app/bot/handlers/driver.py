@@ -5,7 +5,12 @@ from aiogram.fsm.context import FSMContext
 from aiogram.types import Message, CallbackQuery
 
 from app.bot import keyboards
-from app.bot.states import DriverRegister, ProposeDirection, DriverCode, DriverRelayChat
+from app.bot.states import (
+    DriverRegister, ProposeDirection, DriverCode, DriverRelayChat,
+    DriverOnlineSetup, AdminRelayChat,
+)
+from app.services import commission_service
+from app.services import admin_relay
 from app.bot.users import ensure_user
 from app.models import (
     CommissionLedger,
@@ -48,8 +53,8 @@ async def go_online(message: Message, state: FSMContext) -> None:
         return
     dprof = DriverProfile.get(user=u)
     if not dprof.full_name:
-        await state.set_state(DriverRegister.full_name)
-        await message.answer("Сначала заполните анкету. ФИО:")
+        await state.set_state(DriverRegister.route_from)
+        await message.answer("Сначала заполните анкету. Маршрут — откуда (город):")
         return
     if dprof.status != DriverStatus.ACTIVE.value:
         await message.answer("Ожидайте подтверждения администратора.")
@@ -62,15 +67,43 @@ async def go_online(message: Message, state: FSMContext) -> None:
     if lvl == "block":
         await message.answer("Аккаунт заблокирован по долгу. Обратитесь к администратору.")
         return
-    DriverProfile.update(online=True).where(DriverProfile.id == dprof.id).execute()
+    await state.set_state(DriverOnlineSetup.own_seats)
+    await state.update_data(driver_go_online=True)
+    await message.answer(
+        "Сколько мест занято вашими пассажирами (0–6)?",
+        reply_markup=keyboards.online_own_seats_kb(),
+    )
+
+
+@router.message(DriverOnlineSetup.own_seats, F.text)
+async def go_online_own_seats(message: Message, state: FSMContext) -> None:
+    if not message.text.isdigit() or int(message.text) not in range(0, 7):
+        await message.answer("Введите число от 0 до 6.")
+        return
+    own = int(message.text)
+    u = User.get(telegram_id=message.from_user.id)
+    dprof = DriverProfile.get(user=u)
+    if own >= dprof.max_seats:
+        await message.answer(f"Должно быть меньше {dprof.max_seats} (всего мест).")
+        return
+    await state.clear()
+    DriverProfile.update(online=True, own_seats_reserved=own).where(DriverProfile.id == dprof.id).execute()
+    dprof = DriverProfile.get_by_id(dprof.id)
     d = Direction.get_by_id(dprof.direction_id)
     queue_service.enqueue_driver_end(d, dprof)
+    from app.services.direction_pairs import get_reverse_direction
+
+    rev = get_reverse_direction(d)
+    bal = Decimal(str(dprof.balance))
+    lvl = order_service.debt_level(bal)
     msg = "Вы в очереди."
+    if rev:
+        msg += f"\n↩ Обратный рейс: {rev.from_label} → {rev.to_label} (после поездки — «🔁 Встать обратно»)."
     if lvl == "restrict":
         msg += " Внимание: высокий долг."
     elif lvl == "warn":
         msg += " Предупреждение: растущий долг."
-    await message.answer(msg)
+    await message.answer(msg, reply_markup=keyboards.main_driver_kb())
 
 
 @router.message(F.text == "🔴 Оффлайн")
@@ -96,8 +129,8 @@ async def my_order(message: Message, state: FSMContext) -> None:
         return
     dprof = DriverProfile.get(user=u)
     if not dprof.full_name:
-        await state.set_state(DriverRegister.full_name)
-        await message.answer("Сначала заполните анкету. ФИО:")
+        await state.set_state(DriverRegister.route_from)
+        await message.answer("Сначала заполните анкету. Маршрут — откуда (город):")
         return
     pending = (
         OrderDriverAssignment.select()
@@ -111,6 +144,7 @@ async def my_order(message: Message, state: FSMContext) -> None:
     if p:
         o = Order.get_by_id(p.order_id)
         d = Direction.get_by_id(o.direction_id)
+        comm = commission_service.commission_amount_for_order(o, dprof)
         text = (
             f"Новый заказ #{o.id}\n"
             f"{d.from_label} → {d.to_label}\n"
@@ -118,6 +152,7 @@ async def my_order(message: Message, state: FSMContext) -> None:
             f"Куда: {o.to_location}\n"
             f"Мест: {o.seats}\n"
             f"Подача: {o.pickup_location or '—'} {o.pickup_time_text or ''}\n"
+            f"Комиссия после QR ≈ {comm} ₽\n"
         )
         await message.answer(text, reply_markup=keyboards.assignment_inline(p.id))
         return
@@ -156,6 +191,24 @@ async def accept(cb: CallbackQuery, state: FSMContext) -> None:
         return
     order_service.driver_respond(ass, accept=True)
     o = Order.get_by_id(ass.order_id)
+    dprof = DriverProfile.get_by_id(ass.driver_id)
+    from app.services.admin_notify import notify_driver_loading
+    qe = (
+        QueueEntry.select()
+        .where(QueueEntry.direction_id == o.direction_id)
+        .order_by(QueueEntry.position)
+        .first()
+    )
+    if qe and qe.driver_id == dprof.id:
+        nxt = queue_service.next_in_queue_after(o.direction_id, qe.position)
+        if nxt:
+            d = Direction.get_by_id(o.direction_id)
+            await notify_driver_loading(
+                cb.bot, nxt.user.telegram_id,
+                dprof.full_name or "Водитель",
+                f"{d.from_label} → {d.to_label}",
+                qe.position + 1,
+            )
     await state.set_state(DriverCode.waiting_code)
     await state.update_data(active_order_id=o.id)
     await cb.message.answer(
@@ -206,8 +259,16 @@ async def enter_code(message: Message, state: FSMContext, bot: Bot) -> None:
     if not ok:
         await message.answer(f"Ошибка: {key}")
         return
+    u = User.get(telegram_id=message.from_user.id)
+    dprof = DriverProfile.get(user=u)
+    dprof = DriverProfile.get_by_id(dprof.id)
+    comm = CommissionLedger.select().where(CommissionLedger.order_id == o.id).first()
+    comm_txt = f" Начислена комиссия: {comm.amount} ₽." if comm else ""
     await state.clear()
-    await message.answer("Код принят. Поездка началась.", reply_markup=keyboards.trip_actions_kb())
+    await message.answer(
+        f"Код принят. Поездка началась.{comm_txt}\nДолг: {dprof.balance} ₽",
+        reply_markup=keyboards.trip_actions_kb(),
+    )
     try:
         await bot.send_message(o.passenger.telegram_id, "Водитель подтвердил код. Приятной поездки!")
     except Exception:
@@ -252,12 +313,13 @@ async def driver_chat_start(message: Message, state: FSMContext) -> None:
         .where(
             (OrderDriverAssignment.driver_id == dprof.id)
             & (OrderDriverAssignment.status == AssignmentStatus.ACCEPTED.value)
-            & (Order.status == OrderStatus.IN_PROGRESS.value)
+            & (Order.status.in_([OrderStatus.ASSIGNED.value, OrderStatus.IN_PROGRESS.value]))
         )
+        .order_by(Order.id.desc())
         .first()
     )
     if not active:
-        await message.answer("Нет активной поездки для чата.")
+        await message.answer("Нет заказа для чата (нужно принять назначение).")
         return
     await state.set_state(DriverRelayChat.active)
     await state.update_data(relay_order_id=active.id)
@@ -327,7 +389,22 @@ async def pay_debt(message: Message, state: FSMContext, bot: Bot) -> None:
         await message.answer("У вас нет долга.")
         return
 
+    from app.models import PaymentPayerType
     from app.services.payment_provider import get_payment_provider
+    settings = get_settings()
+    if not settings.shop_id or not settings.shop_secret_key:
+        pr = PaymentRecord.create(
+            driver=dprof,
+            payer_type=PaymentPayerType.DRIVER.value,
+            amount=bal,
+            status=PaymentStatus.AWAITING_ADMIN.value,
+            provider="manual",
+        )
+        await message.answer(
+            f"Сумма к оплате: {bal} руб.\nПереведите администратору и дождитесь подтверждения в админке."
+        )
+        await notify_payment_received(bot, dprof.full_name or "Без имени", bal, pr.id)
+        return
     provider = get_payment_provider()
     try:
         result = provider.create_payment(
@@ -342,6 +419,7 @@ async def pay_debt(message: Message, state: FSMContext, bot: Bot) -> None:
 
     pr = PaymentRecord.create(
         driver=dprof,
+        payer_type=PaymentPayerType.DRIVER.value,
         amount=bal,
         status=PaymentStatus.PENDING.value,
         provider="yookassa",
@@ -442,10 +520,78 @@ async def balance(message: Message, state: FSMContext) -> None:
     dprof = DriverProfile.get(user=u)
     bal = Decimal(str(dprof.balance))
     lvl = order_service.debt_level(bal)
+    s = get_settings()
     await message.answer(
-        f"Баланс (долг): {bal}. Уровень: {lvl}.\n"
-        f"Оплату подтверждает администратор после перевода (кнопка «Я оплатил» в разработке через кассу)."
+        f"Баланс (долг): {bal} ₽. Уровень: {lvl}.\n"
+        f"Комиссия {s.commission_percent}% от тарифа по направлению начисляется после QR.\n"
+        "Оплата: «💸 Оплатить долг» (YooKassa) или перевод с подтверждением админом."
     )
+
+
+@router.message(F.text == "ℹ️ Как считается долг")
+async def debt_info(message: Message, state: FSMContext) -> None:
+    if await state.get_state():
+        return
+    s = get_settings()
+    await message.answer(
+        f"Комиссия = {s.commission_percent}% × (цена_за_место × места платформы + фикс).\n"
+        "Свои пассажиры (указаны при «Онлайн») не входят в комиссию.\n"
+        "Начисление — сразу после сканирования QR/кода пассажира."
+    )
+
+
+@router.message(F.text == "👥 Мои пассажиры")
+async def my_passengers(message: Message, state: FSMContext) -> None:
+    if await state.get_state():
+        return
+    ensure_user(message.from_user, prefer_driver=True)
+    u = User.get(telegram_id=message.from_user.id)
+    dprof = DriverProfile.get(user=u)
+    rows = list(
+        Order.select()
+        .join(OrderDriverAssignment, on=(OrderDriverAssignment.order_id == Order.id))
+        .where(
+            (OrderDriverAssignment.driver_id == dprof.id)
+            & (OrderDriverAssignment.status == AssignmentStatus.ACCEPTED.value)
+            & (Order.status == OrderStatus.ASSIGNED.value)
+        )
+    )
+    if not rows:
+        await message.answer("Нет принятых пассажиров на загрузке.")
+        return
+    occ = order_service.occupied_seats_for_driver(dprof)
+    lines = [f"#{o.id}: {o.from_location} → {o.to_location}, мест {o.seats}" for o in rows]
+    await message.answer(
+        f"Пассажиры ({len(rows)} заказов, {occ} мест):\n" + "\n".join(lines)
+        + f"\n\nСвободно мест платформы: {order_service.platform_capacity_remaining(dprof)}"
+    )
+
+
+@router.message(F.text == "📞 Связь с админом")
+async def driver_admin_chat(message: Message, state: FSMContext) -> None:
+    if await state.get_state():
+        return
+    ensure_user(message.from_user, prefer_driver=True)
+    await state.set_state(AdminRelayChat.active)
+    await state.update_data(admin_relay_driver_id=_driver(message).id)
+    await message.answer("Чат с администратором. /stop — выход.")
+
+
+@router.message(AdminRelayChat.active, F.text)
+async def driver_admin_relay(message: Message, state: FSMContext, bot: Bot) -> None:
+    if message.text.startswith("/stop"):
+        await state.clear()
+        await message.answer("Чат закрыт.", reply_markup=keyboards.main_driver_kb())
+        return
+    data = await state.get_data()
+    await admin_relay.relay_to_admins(
+        bot,
+        message.text,
+        from_telegram_id=message.from_user.id,
+        role="водитель",
+        driver_id=data.get("admin_relay_driver_id"),
+    )
+    await message.answer("Отправлено администратору.")
 
 
 @router.message(F.text == "📊 История")
@@ -481,9 +627,23 @@ async def propose_from(message: Message, state: FSMContext) -> None:
 
 @router.message(ProposeDirection.to_label, F.text)
 async def propose_to(message: Message, state: FSMContext) -> None:
-    await state.update_data(to_label=message.text.strip())
+    to_city = message.text.strip()
+    data = await state.get_data()
+    await state.update_data(to_label=to_city)
+    await state.set_state(ProposeDirection.return_route)
+    fr = data.get("from_label", "")
+    await message.answer(
+        f"Едете обратно ({to_city} → {fr})?",
+        reply_markup=keyboards.return_route_kb(),
+    )
+
+
+@router.callback_query(ProposeDirection.return_route, F.data.in_({"return_yes", "return_no"}))
+async def propose_return(cb: CallbackQuery, state: FSMContext) -> None:
+    await state.update_data(include_return=cb.data == "return_yes")
     await state.set_state(ProposeDirection.eta_min)
-    await message.answer("Примерное время в пути (минуты, числом):")
+    await cb.message.answer("Примерное время в пути (минуты, числом):")
+    await cb.answer()
 
 
 @router.message(ProposeDirection.eta_min, F.text)
@@ -503,17 +663,54 @@ async def propose_finish(message: Message, state: FSMContext, bot: Bot) -> None:
     ensure_user(message.from_user, prefer_driver=True)
     u = User.get(telegram_id=message.from_user.id)
     dprof = DriverProfile.get(user=u)
+    from app.services import direction_pairs
+
     comment = None if message.text.strip() == "-" else message.text.strip()
-    ProposedDirection.create(
-        proposer=dprof,
-        from_label=data["from_label"],
-        to_label=data["to_label"],
+    include_return = data.get("include_return", False)
+    direction_pairs.create_paired_proposals(
+        dprof,
+        data["from_label"],
+        data["to_label"],
         estimated_time_min=data["eta_min"],
         comment=comment,
-        status=ProposedStatus.PENDING.value,
+        include_return=include_return,
     )
-    await message.answer("Заявка отправлена администратору.")
-    await notify_proposal(bot, data["from_label"], data["to_label"], dprof.full_name or "Без имени")
+    msg = f"Заявка отправлена: {data['from_label']} → {data['to_label']}"
+    if include_return:
+        msg += f"\n↩ и {data['to_label']} → {data['from_label']}"
+    await message.answer(msg)
+    await notify_proposal(
+        bot, data["from_label"], data["to_label"], dprof.full_name or "Без имени",
+        paired=include_return,
+    )
+
+
+@router.message(DriverRegister.route_from, F.text)
+async def reg_route_from(message: Message, state: FSMContext) -> None:
+    await state.update_data(route_from=message.text.strip())
+    await state.set_state(DriverRegister.route_to)
+    await message.answer("Куда (город):")
+
+
+@router.message(DriverRegister.route_to, F.text)
+async def reg_route_to(message: Message, state: FSMContext) -> None:
+    to_city = message.text.strip()
+    data = await state.get_data()
+    await state.update_data(route_to=to_city)
+    await state.set_state(DriverRegister.return_route)
+    fr = data.get("route_from", "")
+    await message.answer(
+        f"Вы также едете обратно?\n{to_city} → {fr}",
+        reply_markup=keyboards.return_route_kb(),
+    )
+
+
+@router.callback_query(DriverRegister.return_route, F.data.in_({"return_yes", "return_no"}))
+async def reg_return_route(cb: CallbackQuery, state: FSMContext) -> None:
+    await state.update_data(include_return=cb.data == "return_yes")
+    await state.set_state(DriverRegister.full_name)
+    await cb.message.answer("ФИО:")
+    await cb.answer()
 
 
 @router.message(DriverRegister.full_name, F.text)
@@ -527,41 +724,115 @@ async def reg_name(message: Message, state: FSMContext) -> None:
 async def reg_car(message: Message, state: FSMContext) -> None:
     await state.update_data(car_info=message.text.strip())
     await state.set_state(DriverRegister.phone)
-    await message.answer("Ваш номер телефона:")
+    await message.answer("Номер телефона:")
 
 
 @router.message(DriverRegister.phone, F.text)
-async def reg_phone(message: Message, state: FSMContext, bot: Bot) -> None:
+async def reg_phone(message: Message, state: FSMContext) -> None:
+    await state.update_data(phone=message.text.strip())
+    await state.set_state(DriverRegister.max_seats)
+    await message.answer("Всего мест в машине (1–6):")
+
+
+@router.message(DriverRegister.max_seats, F.text)
+async def reg_max_seats(message: Message, state: FSMContext) -> None:
+    if not message.text.isdigit() or int(message.text) not in range(1, 7):
+        await message.answer("Введите число 1–6.")
+        return
+    await state.update_data(max_seats=int(message.text))
+    await state.set_state(DriverRegister.own_seats)
+    await message.answer("Сколько мест обычно занимают ваши пассажиры (0–6)?")
+
+
+@router.message(DriverRegister.own_seats, F.text)
+async def reg_own_seats(message: Message, state: FSMContext) -> None:
+    if not message.text.isdigit() or int(message.text) not in range(0, 7):
+        await message.answer("Введите число 0–6.")
+        return
+    await state.update_data(own_seats=int(message.text))
+    await state.set_state(DriverRegister.price_per_seat)
+    await message.answer("Тариф: цена за место (₽, число):")
+
+
+@router.message(DriverRegister.price_per_seat, F.text)
+async def reg_price(message: Message, state: FSMContext) -> None:
+    try:
+        price = Decimal(message.text.replace(",", ".").strip())
+    except Exception:
+        await message.answer("Введите число.")
+        return
+    await state.update_data(price_per_seat=str(price))
+    await state.set_state(DriverRegister.fixed_price)
+    await message.answer("Фиксированная доплата за рейс (₽, 0 если нет):")
+
+
+@router.message(DriverRegister.fixed_price, F.text)
+async def reg_fixed(message: Message, state: FSMContext, bot: Bot) -> None:
     import logging
     logger = logging.getLogger("taxi_bot.driver")
     try:
-        data = await state.get_data()
-        await state.clear()
-        ensure_user(message.from_user, prefer_driver=True)
-        u = User.get(telegram_id=message.from_user.id)
-        dprof = DriverProfile.get(user=u)
-        DriverProfile.update(
-            full_name=data.get("full_name", ""),
-            car_info=data.get("car_info", ""),
-            phone=message.text.strip(),
-            status=DriverStatus.PENDING.value,
-        ).where(DriverProfile.id == dprof.id).execute()
-        await message.answer(
-            "✅ Анкета отправлена!\n\n"
-            f"Имя: {data.get('full_name', '—')}\n"
-            f"Авто: {data.get('car_info', '—')}\n"
-            f"Телефон: {message.text.strip()}\n\n"
-            "Ожидайте подтверждения администратора. Вам придёт уведомление.",
-            reply_markup=keyboards.main_driver_kb(),
+        fixed = Decimal(message.text.replace(",", ".").strip())
+    except Exception:
+        await message.answer("Введите число.")
+        return
+    data = await state.get_data()
+    await state.clear()
+    ensure_user(message.from_user, prefer_driver=True)
+    u = User.get(telegram_id=message.from_user.id)
+    dprof = DriverProfile.get(user=u)
+    max_seats = data.get("max_seats", 6)
+    own_seats = data.get("own_seats", 0)
+    price = Decimal(data.get("price_per_seat", "0"))
+    DriverProfile.update(
+        full_name=data.get("full_name", ""),
+        car_info=data.get("car_info", ""),
+        phone=data.get("phone", ""),
+        max_seats=max_seats,
+        own_seats_reserved=own_seats,
+        proposed_price_per_seat=price,
+        proposed_fixed_price=fixed,
+        status=DriverStatus.PENDING.value,
+    ).where(DriverProfile.id == dprof.id).execute()
+    from app.services import direction_pairs
+
+    include_return = data.get("include_return", True)
+    proposals = direction_pairs.create_paired_proposals(
+        dprof,
+        data["route_from"],
+        data["route_to"],
+        max_seats=max_seats,
+        own_seats=own_seats,
+        price_per_seat=price,
+        fixed_price=fixed,
+        comment=f"Анкета: {data.get('car_info', '')}",
+        include_return=include_return,
+    )
+    route_txt = f"{data['route_from']} → {data['route_to']}"
+    if include_return and len(proposals) > 1:
+        route_txt += f"\n↩ {data['route_to']} → {data['route_from']}"
+    summary = (
+        "✅ Анкета отправлена!\n\n"
+        f"Маршрут(ы): {route_txt}\n"
+        f"ФИО: {data.get('full_name')}\n"
+        f"Авто: {data.get('car_info')}\n"
+        f"Тел: {data.get('phone')}\n"
+        f"Мест: {max_seats} (своих: {own_seats})\n"
+        f"Тариф: {price} ₽/место + {fixed} ₽ фикс\n\n"
+        "Ожидайте подтверждения. «📞 Связь с админом» — в любой момент."
+    )
+    await message.answer(summary, reply_markup=keyboards.main_driver_kb())
+    try:
+        await notify_driver_registered(
+            bot,
+            data.get("full_name", ""),
+            message.from_user.id,
+            route=f"{data['route_from']} → {data['route_to']}",
+            max_seats=max_seats,
+            tariff=f"{price}/{fixed}",
         )
-        try:
-            await notify_driver_registered(bot, data.get("full_name", ""), message.from_user.id)
-        except Exception as e:
-            logger.warning("Failed to notify admins about driver registration: %s", e)
+        await notify_proposal(
+            bot, data["route_from"], data["route_to"], data.get("full_name", ""),
+            paired=include_return,
+        )
     except Exception as e:
-        logger.exception("Error in reg_phone handler")
-        await state.clear()
-        await message.answer(
-            "Произошла ошибка при регистрации. Попробуйте снова нажать «🟢 Онлайн».",
-            reply_markup=keyboards.main_driver_kb(),
-        )
+        logger.warning("Notify failed: %s", e)

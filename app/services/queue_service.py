@@ -22,6 +22,16 @@ def enqueue_driver_end(direction: Direction, driver: DriverProfile) -> QueueEntr
     return QueueEntry.create(direction=direction, driver=driver, position=pos, enqueued_at=now)
 
 
+def enqueue_pioneers_in_order(direction: Direction, drivers: List[DriverProfile]) -> None:
+    """Place drivers at queue positions 1..N in given order (e.g. by proposal created_at)."""
+    now = datetime.now(timezone.utc)
+    QueueEntry.delete().where(QueueEntry.direction_id == direction.id).execute()
+    for pos, driver in enumerate(drivers, start=1):
+        QueueEntry.create(
+            direction=direction, driver=driver, position=pos, enqueued_at=now
+        )
+
+
 def remove_from_queue(direction: Direction, driver: DriverProfile) -> None:
     QueueEntry.delete().where(
         (QueueEntry.direction_id == direction.id) & (QueueEntry.driver_id == driver.id)
@@ -41,6 +51,12 @@ def _normalize_positions(direction_id: int) -> None:
 
 
 def reorder_queue(direction_id: int, driver_ids_in_order: List[int], *, actor_telegram_id: int) -> None:
+    existing = {
+        r.driver_id
+        for r in QueueEntry.select().where(QueueEntry.direction_id == direction_id)
+    }
+    if set(driver_ids_in_order) != existing:
+        raise ValueError("invalid_queue_order")
     now = datetime.now(timezone.utc)
     for pos, did in enumerate(driver_ids_in_order, start=1):
         QueueEntry.update(position=pos, enqueued_at=now).where(
@@ -69,3 +85,17 @@ def fifo_first_online(direction: Direction) -> Optional[DriverProfile]:
     for row in q:
         return row.driver
     return None
+
+
+def next_in_queue_after(direction_id: int, position: int) -> Optional[DriverProfile]:
+    row = (
+        QueueEntry.select()
+        .where(
+            (QueueEntry.direction_id == direction_id) & (QueueEntry.position > position)
+        )
+        .order_by(QueueEntry.position)
+        .first()
+    )
+    if not row:
+        return None
+    return DriverProfile.get_by_id(row.driver_id)

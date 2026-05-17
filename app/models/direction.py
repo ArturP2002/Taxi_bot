@@ -14,6 +14,7 @@ class Direction(BaseModel):
     price_per_seat = DecimalField(max_digits=12, decimal_places=2, default=Decimal("0"))
     fixed_price = DecimalField(max_digits=12, decimal_places=2, default=Decimal("0"))
     vehicle_capacity_default = IntegerField(default=6)
+    online_payment_required = BooleanField(default=False)
     reverse_direction = ForeignKeyField("self", null=True, backref="reverse_of")
 
     class Meta:

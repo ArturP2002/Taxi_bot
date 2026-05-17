@@ -8,28 +8,89 @@ from aiogram.fsm.context import FSMContext
 from aiogram.types import Message, CallbackQuery, BufferedInputFile
 
 from app.bot import keyboards
-from app.bot.states import PassengerOrder, RelayChat
+from app.bot.states import PassengerOrder, RelayChat, AdminRelayChat
 from app.bot.users import ensure_user
-from app.models import Direction, Order, OrderStatus
+from app.config import get_settings
+from app.models import Direction, Order, OrderStatus, PassengerPaymentStatus
 from app.services import code_service, order_service
+from app.services import direction_search
 from app.services.admin_notify import notify_new_order
+from app.services import passenger_payment_service
+from app.services import admin_relay
 
 router = Router(name="passenger")
+
+
+async def _show_directions_page(message_or_cb, state: FSMContext, page: int = 0, mode: str = "browse") -> None:
+    settings = get_settings()
+    data = await state.get_data()
+    search_flat = data.get("search_results") if mode == "search" else None
+    chunk, page, pages = direction_search.get_groups_for_browse(
+        search_results=search_flat,
+        page=page,
+        page_size=settings.direction_page_size,
+    )
+    if not chunk:
+        text = "Направления не найдены."
+        if hasattr(message_or_cb, "answer"):
+            await message_or_cb.answer(text)
+        else:
+            await message_or_cb.message.answer(text)
+        return
+    kb = keyboards.direction_groups_inline(chunk, page=page, total_pages=pages, mode=mode)
+    text = f"Выберите направление (стр. {page + 1}/{pages}). Пара ↩ — обратный рейс:"
+    if hasattr(message_or_cb, "message"):
+        await message_or_cb.message.edit_text(text, reply_markup=kb)
+    else:
+        await message_or_cb.answer(text, reply_markup=kb)
 
 
 @router.message(F.text == "🚕 Заказать поездку")
 @router.message(Command("order"))
 async def start_order(message: Message, state: FSMContext) -> None:
     ensure_user(message.from_user)
-    directions = list(Direction.select().where(Direction.enabled == True))  # noqa: E712
+    directions = direction_search.list_enabled_directions()
     if not directions:
         await message.answer("Направления пока недоступны.")
         return
     await state.set_state(PassengerOrder.choosing_direction)
-    await message.answer("Выберите направление:", reply_markup=keyboards.directions_inline(directions))
+    await state.update_data(search_results=None, dir_mode="browse")
+    await _show_directions_page(message, state, 0, "browse")
 
 
-@router.callback_query(PassengerOrder.choosing_direction, F.data.startswith("dir:"))
+@router.callback_query(PassengerOrder.choosing_direction, F.data == "dirsearch")
+async def direction_search_start(cb: CallbackQuery, state: FSMContext) -> None:
+    await state.set_state(PassengerOrder.direction_search)
+    await cb.message.answer("Введите город или маршрут для поиска:")
+    await cb.answer()
+
+
+@router.message(PassengerOrder.direction_search, F.text)
+async def direction_search_query(message: Message, state: FSMContext) -> None:
+    from app.services.direction_pairs import flatten_groups_for_search
+
+    groups = direction_search.search_groups(message.text.strip())
+    results = flatten_groups_for_search(groups)
+    await state.set_state(PassengerOrder.choosing_direction)
+    await state.update_data(search_results=results, dir_mode="search")
+    if not results:
+        await message.answer("Ничего не найдено. Попробуйте другой запрос или листайте все маршруты.")
+        await state.update_data(search_results=None, dir_mode="browse")
+        await _show_directions_page(message, state, 0, "browse")
+        return
+    await _show_directions_page(message, state, 0, "search")
+
+
+@router.callback_query(PassengerOrder.choosing_direction, F.data.startswith("dirpage:"))
+async def direction_page(cb: CallbackQuery, state: FSMContext) -> None:
+    parts = cb.data.split(":")
+    page = int(parts[1])
+    mode = parts[2] if len(parts) > 2 else "browse"
+    await _show_directions_page(cb, state, page, mode)
+    await cb.answer()
+
+
+@router.callback_query(PassengerOrder.choosing_direction, F.data.startswith("dirpick:"))
 async def pick_direction(cb: CallbackQuery, state: FSMContext) -> None:
     did = int(cb.data.split(":")[1])
     await state.update_data(direction_id=did)
@@ -86,22 +147,29 @@ async def phone_enter(message: Message, state: FSMContext, bot: Bot) -> None:
     direction = Direction.get_by_id(data["direction_id"])
     code = code_service.generate_six_digit_code()
     now = datetime.now(timezone.utc)
+
+    pay_status = PassengerPaymentStatus.NOT_REQUIRED.value
+    order_status = OrderStatus.NEW.value
+    if getattr(direction, "online_payment_required", False):
+        pay_status = PassengerPaymentStatus.AWAITING.value
+        order_status = OrderStatus.AWAITING_PAYMENT.value
+
     order = Order.create(
         direction=direction,
         passenger=user,
         from_location=data["from_location"],
         to_location=data["to_location"],
         seats=data["seats"],
+        platform_seats=data["seats"],
         phone=message.text.strip(),
-        status=OrderStatus.NEW.value,
+        status=order_status,
+        passenger_payment_status=pay_status,
         confirmation_code_hash="tmp",
         code_issued_at=now,
     )
     Order.update(confirmation_code_hash=code_service.hash_code(order.id, code)).where(Order.id == order.id).execute()
     order = Order.get_by_id(order.id)
     token = code_service.build_qr_token(order.id)
-
-    suggestion = order_service.suggest_driver_for_order(order)
 
     qr = qrcode.make(token)
     buf = io.BytesIO()
@@ -114,48 +182,138 @@ async def phone_enter(message: Message, state: FSMContext, bot: Bot) -> None:
         f"Куда: {order.to_location}\n"
         f"Мест: {order.seats}\n"
         f"Код: {code}\n\n"
-        "Назовите код водителю при посадке или покажите QR. Код одноразовый.\n"
-        "После назначения водителя можно писать в «Связь» внутри поездки."
+        "Назовите код водителю при посадке или покажите QR.\n"
+        "«📞 Связь с водителем» — после назначения. «📞 Связь с админом» — в любой момент."
     )
+    extra_kb = None
+    if order_status == OrderStatus.AWAITING_PAYMENT.value:
+        fare = passenger_payment_service.passenger_fare_amount(order)
+        caption += f"\n\nОплата онлайн: {fare} ₽ (до подтверждения админом)."
+        extra_kb = keyboards.passenger_pay_inline(order.id)
+
     await message.answer_photo(
         BufferedInputFile(buf.read(), filename="qr.png"),
         caption=caption,
-        reply_markup=keyboards.main_passenger_kb(),
+        reply_markup=extra_kb or keyboards.main_passenger_kb(),
     )
 
-    suggested_name = None
-    assignment_id = None
-    if suggestion:
-        from app.models import DriverProfile
-        drv = DriverProfile.get_by_id(suggestion.driver_id)
-        suggested_name = drv.full_name or f"ID:{drv.id}"
-        assignment_id = suggestion.id
+    if order_status == OrderStatus.NEW.value:
+        suggestion = order_service.suggest_driver_for_order(order)
+        suggested_name = None
+        assignment_id = None
+        if suggestion:
+            from app.models import DriverProfile
+            drv = DriverProfile.get_by_id(suggestion.driver_id)
+            suggested_name = drv.full_name or f"ID:{drv.id}"
+            assignment_id = suggestion.id
+        await notify_new_order(
+            bot, order.id, direction.from_label, direction.to_label,
+            order.from_location, order.to_location, order.seats,
+            suggested_driver_name=suggested_name,
+            assignment_id=assignment_id,
+        )
+    else:
+        await notify_new_order(
+            bot, order.id, direction.from_label, direction.to_label,
+            order.from_location, order.to_location, order.seats,
+            suggested_driver_name=None,
+            assignment_id=None,
+        )
 
-    await notify_new_order(
-        bot, order.id, direction.from_label, direction.to_label,
-        order.from_location, order.to_location, order.seats,
-        suggested_driver_name=suggested_name,
-        assignment_id=assignment_id,
-    )
+
+@router.callback_query(F.data.startswith("pay:"))
+async def pay_order(cb: CallbackQuery, bot: Bot) -> None:
+    oid = int(cb.data.split(":")[1])
+    order = Order.get_by_id(oid)
+    result = passenger_payment_service.init_passenger_payment(order)
+    if result.get("awaiting_admin"):
+        await cb.message.answer(
+            f"Заказ #{oid}: ожидает подтверждения оплаты администратором ({result['payment_id']})."
+        )
+    elif result.get("confirmation_url"):
+        await cb.message.answer(
+            f"Оплата заказа #{oid}: {passenger_payment_service.passenger_fare_amount(order)} ₽\n"
+            f"{result['confirmation_url']}\n\nПосле оплаты нажмите «Проверить оплату»."
+        )
+    else:
+        await cb.message.answer(f"Платёж создан. ID: {result.get('payment_id')}")
+    await cb.answer()
 
 
+@router.callback_query(F.data.startswith("paycheck:"))
+async def pay_check(cb: CallbackQuery) -> None:
+    oid = int(cb.data.split(":")[1])
+    order = Order.get_by_id(oid)
+    status = passenger_payment_service.check_passenger_payment(order)
+    msgs = {
+        "paid": "Оплата подтверждена. Заявка передана в обработку.",
+        "pending": "Платёж ещё не прошёл.",
+        "awaiting_admin": "Ожидает подтверждения администратором.",
+        "failed": "Платёж отменён.",
+        "no_payment": "Сначала нажмите «Оплатить онлайн».",
+    }
+    await cb.message.answer(msgs.get(status, status))
+    await cb.answer()
+
+
+def _contactable_order(user) -> Order | None:
+    from app.models import User
+    u = User.get(telegram_id=user.id)
+    for st in (OrderStatus.ASSIGNED.value, OrderStatus.IN_PROGRESS.value):
+        o = (
+            Order.select()
+            .where((Order.passenger_id == u.id) & (Order.status == st))
+            .order_by(Order.id.desc())
+            .first()
+        )
+        if o:
+            return o
+    return None
+
+
+@router.message(F.text == "📞 Связь с водителем")
 @router.message(F.text == "📞 Связь")
 @router.message(Command("contact"))
-async def contact_menu(message: Message, state: FSMContext) -> None:
-    user = ensure_user(message.from_user)
-    orders = Order.select().where(
-        (Order.passenger_id == user.id) & (Order.status == OrderStatus.IN_PROGRESS.value)
-    )
-    rows = list(orders)
-    if not rows:
-        await message.answer("Нет активной поездки для связи.")
+async def contact_driver(message: Message, state: FSMContext) -> None:
+    ensure_user(message.from_user)
+    o = _contactable_order(message.from_user)
+    if not o:
+        await message.answer(
+            "Нет заказа с назначенным водителем. Связь доступна после назначения."
+        )
         return
-    o = rows[0]
     await state.set_state(RelayChat.active)
     await state.update_data(relay_order_id=o.id)
     await message.answer(
-        f"Чат по заказу #{o.id}. Пишите сообщения — их увидит водитель. /stop чтобы выйти."
+        f"Чат с водителем по заказу #{o.id}. /stop чтобы выйти."
     )
+
+
+@router.message(F.text == "📞 Связь с админом")
+async def contact_admin(message: Message, state: FSMContext) -> None:
+    user = ensure_user(message.from_user)
+    o = admin_relay.active_order_for_passenger(user)
+    await state.set_state(AdminRelayChat.active)
+    await state.update_data(admin_relay_order_id=o.id if o else None)
+    hint = f" по заказу #{o.id}" if o else ""
+    await message.answer(f"Чат с администратором{hint}. Пишите сообщение. /stop — выход.")
+
+
+@router.message(AdminRelayChat.active, F.text)
+async def relay_admin_passenger(message: Message, state: FSMContext, bot: Bot) -> None:
+    if message.text.startswith("/stop"):
+        await state.clear()
+        await message.answer("Чат закрыт.", reply_markup=keyboards.main_passenger_kb())
+        return
+    data = await state.get_data()
+    await admin_relay.relay_to_admins(
+        bot,
+        message.text,
+        from_telegram_id=message.from_user.id,
+        role="пассажир",
+        order_id=data.get("admin_relay_order_id"),
+    )
+    await message.answer("Сообщение отправлено администратору.")
 
 
 @router.message(RelayChat.active, F.text)
@@ -175,7 +333,10 @@ async def relay_passenger(message: Message, state: FSMContext, bot: Bot) -> None
         OrderDriverAssignment.select()
         .where(
             (OrderDriverAssignment.order_id == oid)
-            & (OrderDriverAssignment.status == AssignmentStatus.ACCEPTED.value)
+            & (OrderDriverAssignment.status.in_([
+                AssignmentStatus.ACCEPTED.value,
+                AssignmentStatus.PENDING.value,
+            ]))
         )
         .first()
     )

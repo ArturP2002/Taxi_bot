@@ -30,6 +30,8 @@ class Settings(BaseSettings):
     debt_block: int = 200
 
     commission_percent: int = 10
+    auto_assign_enabled: bool = True
+    direction_page_size: int = 10
 
     @property
     def admin_ids(self) -> FrozenSet[int]:

@@ -27,6 +27,11 @@ class DriverProfile(BaseModel):
     car_info = TextField(null=True)
     phone = TextField(null=True)
     is_primary_on_direction = BooleanField(default=False)
+    own_seats_reserved = IntegerField(default=0)
+    loading = BooleanField(default=False)
+    tariff_note = TextField(null=True)
+    proposed_price_per_seat = DecimalField(max_digits=12, decimal_places=2, null=True)
+    proposed_fixed_price = DecimalField(max_digits=12, decimal_places=2, null=True)
     pending_return_direction = ForeignKeyField(
         Direction, null=True, backref="drivers_pending_return", on_delete="SET NULL"
     )

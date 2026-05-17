@@ -15,11 +15,20 @@ from app.models.user import User
 from app.util.datetimeutil import utcnow
 
 
+class PassengerPaymentStatus(str, enum.Enum):
+    NOT_REQUIRED = "not_required"
+    AWAITING = "awaiting"
+    PAID = "paid"
+    FAILED = "failed"
+
+
 class OrderStatus(str, enum.Enum):
     NEW = "new"
+    AWAITING_PAYMENT = "awaiting_payment"
     ASSIGNED = "assigned"
     IN_PROGRESS = "in_progress"
     COMPLETED = "completed"
+    CANCELLED = "cancelled"
     ADMIN_REVIEW = "admin_review"
 
 
@@ -36,8 +45,12 @@ class Order(BaseModel):
     from_location = TextField()
     to_location = TextField()
     seats = IntegerField()
+    platform_seats = IntegerField(null=True)
     phone = TextField()
     status = CharField(max_length=32, default=OrderStatus.NEW.value)
+    passenger_payment_status = CharField(
+        max_length=32, default=PassengerPaymentStatus.NOT_REQUIRED.value
+    )
     confirmation_code_hash = TextField()
     code_issued_at = DateTimeField(null=True)
     code_consumed_at = DateTimeField(null=True)

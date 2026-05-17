@@ -4,9 +4,20 @@ from app.models.direction import Direction
 from app.models.driver import DriverProfile, DriverStatus
 from app.models.passenger import PassengerProfile
 from app.models.queue import QueueEntry
-from app.models.order import Order, OrderStatus, OrderDriverAssignment, AssignmentStatus
+from app.models.order import (
+    Order,
+    OrderStatus,
+    PassengerPaymentStatus,
+    OrderDriverAssignment,
+    AssignmentStatus,
+)
 from app.models.proposed import ProposedDirection, ProposedStatus, DirectionPioneer
-from app.models.financial import CommissionLedger, PaymentRecord, PaymentStatus
+from app.models.financial import (
+    CommissionLedger,
+    PaymentRecord,
+    PaymentStatus,
+    PaymentPayerType,
+)
 from app.models.audit import AuditLog
 
 ALL_MODELS = [
@@ -36,6 +47,7 @@ __all__ = [
     "QueueEntry",
     "Order",
     "OrderStatus",
+    "PassengerPaymentStatus",
     "OrderDriverAssignment",
     "AssignmentStatus",
     "ProposedDirection",
@@ -44,5 +56,6 @@ __all__ = [
     "CommissionLedger",
     "PaymentRecord",
     "PaymentStatus",
+    "PaymentPayerType",
     "AuditLog",
 ]

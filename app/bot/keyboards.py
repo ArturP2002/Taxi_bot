@@ -1,11 +1,16 @@
+from typing import List, Optional
+
 from aiogram.types import ReplyKeyboardMarkup, InlineKeyboardMarkup
 from aiogram.utils.keyboard import ReplyKeyboardBuilder, InlineKeyboardBuilder
+
+from app.config import get_settings
 
 
 def main_passenger_kb() -> ReplyKeyboardMarkup:
     b = ReplyKeyboardBuilder()
     b.button(text="🚕 Заказать поездку")
-    b.button(text="📞 Связь")
+    b.button(text="📞 Связь с водителем")
+    b.button(text="📞 Связь с админом")
     b.button(text="🧑‍✈️ Я водитель")
     b.adjust(1)
     return b.as_markup(resize_keyboard=True)
@@ -16,11 +21,14 @@ def main_driver_kb() -> ReplyKeyboardMarkup:
     b.button(text="🟢 Онлайн")
     b.button(text="🔴 Оффлайн")
     b.button(text="📥 Мой заказ")
+    b.button(text="👥 Мои пассажиры")
     b.button(text="💰 Баланс")
     b.button(text="📊 История")
+    b.button(text="ℹ️ Как считается долг")
     b.button(text="💸 Оплатить долг")
     b.button(text="🔍 Проверить платёж")
     b.button(text="➕ Предложить маршрут")
+    b.button(text="📞 Связь с админом")
     b.button(text="👤 Режим пассажира")
     b.adjust(2)
     return b.as_markup(resize_keyboard=True)
@@ -40,11 +48,59 @@ def cancel_kb() -> ReplyKeyboardMarkup:
     return b.as_markup(resize_keyboard=True)
 
 
-def directions_inline(directions: list) -> InlineKeyboardMarkup:
+def directions_inline(
+    directions: list,
+    *,
+    page: int = 0,
+    total_pages: int = 1,
+    mode: str = "browse",
+) -> InlineKeyboardMarkup:
     ib = InlineKeyboardBuilder()
     for d in directions:
         label = f"{d.from_label} → {d.to_label}"
-        ib.button(text=label[:60], callback_data=f"dir:{d.id}")
+        ib.button(text=label[:60], callback_data=f"dirpick:{d.id}")
+    ib.adjust(1)
+    return _directions_nav(ib, page=page, total_pages=total_pages, mode=mode)
+
+
+def direction_groups_inline(
+    groups: list,
+    *,
+    page: int = 0,
+    total_pages: int = 1,
+    mode: str = "browse",
+) -> InlineKeyboardMarkup:
+    """Show туда/обратно pairs adjacent (↩ on return leg)."""
+    ib = InlineKeyboardBuilder()
+    for g in groups:
+        d = g.forward
+        label = f"{d.from_label} → {d.to_label}"
+        ib.button(text=label[:58], callback_data=f"dirpick:{d.id}")
+        if g.reverse:
+            r = g.reverse
+            ib.button(text=f"↩ {r.from_label} → {r.to_label}"[:58], callback_data=f"dirpick:{r.id}")
+    ib.adjust(1)
+    return _directions_nav(ib, page=page, total_pages=total_pages, mode=mode)
+
+
+def _directions_nav(
+    ib: InlineKeyboardBuilder, *, page: int, total_pages: int, mode: str
+) -> InlineKeyboardMarkup:
+    nav = InlineKeyboardBuilder()
+    if page > 0:
+        nav.button(text="◀ Назад", callback_data=f"dirpage:{page - 1}:{mode}")
+    if page < total_pages - 1:
+        nav.button(text="Вперёд ▶", callback_data=f"dirpage:{page + 1}:{mode}")
+    nav.button(text="🔍 Поиск", callback_data="dirsearch")
+    nav.adjust(2, 1)
+    ib.attach(nav)
+    return ib.as_markup()
+
+
+def return_route_kb() -> InlineKeyboardMarkup:
+    ib = InlineKeyboardBuilder()
+    ib.button(text="✅ Да, еду обратно", callback_data="return_yes")
+    ib.button(text="❌ Нет, только туда", callback_data="return_no")
     ib.adjust(1)
     return ib.as_markup()
 
@@ -71,4 +127,20 @@ def trip_actions_kb() -> ReplyKeyboardMarkup:
     b.button(text="💬 Связь с пассажиром")
     b.button(text="✅ Завершить поездку")
     b.adjust(1)
+    return b.as_markup(resize_keyboard=True)
+
+
+def passenger_pay_inline(order_id: int) -> InlineKeyboardMarkup:
+    ib = InlineKeyboardBuilder()
+    ib.button(text="💳 Оплатить онлайн", callback_data=f"pay:{order_id}")
+    ib.button(text="🔍 Проверить оплату", callback_data=f"paycheck:{order_id}")
+    ib.adjust(1)
+    return ib.as_markup()
+
+
+def online_own_seats_kb() -> ReplyKeyboardMarkup:
+    b = ReplyKeyboardBuilder()
+    for i in range(0, 7):
+        b.button(text=str(i))
+    b.adjust(4)
     return b.as_markup(resize_keyboard=True)

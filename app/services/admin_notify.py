@@ -72,23 +72,40 @@ async def notify_suggestion_update(bot: Bot, order_id: int,
         await notify_admins(bot, text)
 
 
-async def notify_driver_registered(bot: Bot, driver_name: str, telegram_id: int) -> None:
+async def notify_driver_registered(
+    bot: Bot,
+    driver_name: str,
+    telegram_id: int,
+    *,
+    route: str | None = None,
+    max_seats: int | None = None,
+    tariff: str | None = None,
+) -> None:
     text = (
         f"👤 Новая заявка от водителя\n"
         f"Имя: {driver_name}\n"
-        f"TG ID: {telegram_id}\n\n"
-        "Подтвердите или отклоните в админке."
+        f"TG ID: {telegram_id}\n"
     )
+    if route:
+        text += f"Маршрут: {route}\n"
+    if max_seats is not None:
+        text += f"Мест: {max_seats}\n"
+    if tariff:
+        text += f"Тариф: {tariff}\n"
+    text += "\nПодтвердите в админке."
     await notify_admins(bot, text)
 
 
-async def notify_proposal(bot: Bot, from_label: str, to_label: str, driver_name: str) -> None:
+async def notify_proposal(
+    bot: Bot, from_label: str, to_label: str, driver_name: str, *, paired: bool = False
+) -> None:
     text = (
         f"🗺 Предложен маршрут\n"
         f"{from_label} → {to_label}\n"
-        f"Водитель: {driver_name}\n\n"
-        "Рассмотрите в админке."
     )
+    if paired:
+        text += f"↩ Обратно: {to_label} → {from_label}\n"
+    text += f"Водитель: {driver_name}\n\nРассмотрите в админке (пара туда/обратно)."
     await notify_admins(bot, text)
 
 
@@ -110,6 +127,34 @@ async def notify_driver_declined(bot: Bot, order_id: int, driver_name: str) -> N
         "Назначьте другого в админке."
     )
     await notify_admins(bot, text)
+
+
+async def notify_proposal_decision(
+    bot: Bot, telegram_id: int, *, approved: bool, route: str, queue_position: int | None = None
+) -> None:
+    if approved:
+        msg = f"✅ Маршрут одобрен: {route}"
+        if queue_position:
+            msg += f"\nВы №{queue_position} в очереди на этом направлении."
+    else:
+        msg = f"❌ Заявка на маршрут отклонена: {route}"
+    try:
+        await bot.send_message(telegram_id, msg)
+    except Exception as e:
+        logger.warning("Failed to notify driver %s: %s", telegram_id, e)
+
+
+async def notify_driver_loading(
+    bot: Bot, telegram_id: int, driver_name: str, route: str, position: int
+) -> None:
+    text = (
+        f"ℹ️ Водитель {driver_name} на загрузке по маршруту {route}.\n"
+        f"Вы №{position} в очереди. Ожидайте."
+    )
+    try:
+        await bot.send_message(telegram_id, text)
+    except Exception as e:
+        logger.warning("Failed to notify queue driver %s: %s", telegram_id, e)
 
 
 async def notify_trip_completed(bot: Bot, order_id: int, driver_name: str, commission) -> None:

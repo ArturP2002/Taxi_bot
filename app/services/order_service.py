@@ -12,6 +12,7 @@ from app.models import (
     OrderDriverAssignment,
     OrderStatus,
     AssignmentStatus,
+    PassengerPaymentStatus,
 )
 from app.services import code_service, commission_service, queue_service, audit_service
 
@@ -25,6 +26,17 @@ ACTIVE_ORDER_STATUSES = (
 def _assignment_driver_pk(ass: OrderDriverAssignment) -> int:
     d = ass.driver
     return int(d) if isinstance(d, int) else d.id
+
+
+def platform_capacity_remaining(driver: DriverProfile) -> int:
+    own = int(getattr(driver, "own_seats_reserved", 0) or 0)
+    occ = occupied_seats_for_driver(driver)
+    return max(0, driver.max_seats - own - occ)
+
+
+def compute_platform_seats(order: Order, driver: DriverProfile) -> int:
+    remaining = platform_capacity_remaining(driver)
+    return min(order.seats, remaining) if remaining > 0 else 0
 
 
 def occupied_seats_for_driver(driver: DriverProfile) -> int:
@@ -42,8 +54,26 @@ def occupied_seats_for_driver(driver: DriverProfile) -> int:
 
 
 def can_assign_order(driver: DriverProfile, order: Order) -> bool:
-    occ = occupied_seats_for_driver(driver)
-    return occ + order.seats <= driver.max_seats
+    return compute_platform_seats(order, driver) >= order.seats
+
+
+def _set_platform_seats(order: Order, driver: DriverProfile) -> None:
+    ps = compute_platform_seats(order, driver)
+    Order.update(platform_seats=ps).where(Order.id == order.id).execute()
+
+
+def update_driver_loading(driver: DriverProfile) -> None:
+    has_accepted = (
+        OrderDriverAssignment.select()
+        .join(Order)
+        .where(
+            (OrderDriverAssignment.driver_id == driver.id)
+            & (OrderDriverAssignment.status == AssignmentStatus.ACCEPTED.value)
+            & (Order.status == OrderStatus.ASSIGNED.value)
+        )
+        .exists()
+    )
+    DriverProfile.update(loading=has_accepted).where(DriverProfile.id == driver.id).execute()
 
 
 def assign_order_to_driver(
@@ -70,12 +100,14 @@ def assign_order_to_driver(
         status=AssignmentStatus.PENDING.value,
         assigned_at=now,
     )
+    _set_platform_seats(order, driver)
     Order.update(
         status=OrderStatus.ASSIGNED.value,
         pickup_location=pickup_location,
         pickup_time_text=pickup_time_text,
         updated_at=now,
     ).where(Order.id == order.id).execute()
+    update_driver_loading(driver)
     audit_service.log_action(
         "order_assigned",
         actor_telegram_id=actor_telegram_id,
@@ -94,6 +126,7 @@ def driver_respond(assignment: OrderDriverAssignment, accept: bool) -> Order:
         OrderDriverAssignment.update(
             status=AssignmentStatus.ACCEPTED.value, responded_at=now
         ).where(OrderDriverAssignment.id == assignment.id).execute()
+        update_driver_loading(driver)
         audit_service.log_action(
             "order_accepted",
             actor_telegram_id=driver.user.telegram_id,
@@ -105,6 +138,7 @@ def driver_respond(assignment: OrderDriverAssignment, accept: bool) -> Order:
             status=AssignmentStatus.DECLINED.value, responded_at=now
         ).where(OrderDriverAssignment.id == assignment.id).execute()
         Order.update(status=OrderStatus.ADMIN_REVIEW.value, updated_at=now).where(Order.id == order.id).execute()
+        update_driver_loading(driver)
         audit_service.log_action(
             "order_declined",
             actor_telegram_id=driver.user.telegram_id,
@@ -139,7 +173,6 @@ def get_accepted_assignment(order: Order) -> Optional[OrderDriverAssignment]:
 
 
 def verify_order_code(order: Order, code_or_token: str) -> Tuple[bool, str]:
-    """Returns (ok, message_key)."""
     if order.code_consumed_at:
         return False, "already_used"
     ass = get_accepted_assignment(order)
@@ -158,6 +191,7 @@ def verify_order_code(order: Order, code_or_token: str) -> Tuple[bool, str]:
         if not code_service.verify_code(order_id, raw, order.confirmation_code_hash):
             return False, "invalid_code"
 
+    driver = DriverProfile.get_by_id(ass.driver_id)
     now = datetime.now(timezone.utc)
     Order.update(
         status=OrderStatus.IN_PROGRESS.value,
@@ -165,6 +199,8 @@ def verify_order_code(order: Order, code_or_token: str) -> Tuple[bool, str]:
         started_at=now,
         updated_at=now,
     ).where(Order.id == order.id).execute()
+    commission_service.record_commission(order, driver, on_start=True)
+    update_driver_loading(driver)
     audit_service.log_action(
         "code_verified",
         entity_type="order",
@@ -198,9 +234,8 @@ def complete_order(order: Order, driver: DriverProfile) -> Tuple[bool, str]:
         return False, "too_early"
 
     Order.update(status=OrderStatus.COMPLETED.value, ended_at=now, updated_at=now).where(Order.id == order.id).execute()
-    commission_service.record_commission(order, driver)
+    update_driver_loading(driver)
 
-    # Return queue: if driver requested reverse direction during trip
     rev = driver.pending_return_direction_id
     DriverProfile.update(pending_return_direction=None).where(DriverProfile.id == driver.id).execute()
     if rev:
@@ -219,6 +254,17 @@ def complete_order(order: Order, driver: DriverProfile) -> Tuple[bool, str]:
     return True, "ok"
 
 
+def cancel_order(order: Order, *, actor_telegram_id: Optional[int] = None) -> None:
+    now = datetime.now(timezone.utc)
+    Order.update(status=OrderStatus.CANCELLED.value, updated_at=now).where(Order.id == order.id).execute()
+    audit_service.log_action(
+        "order_cancelled",
+        actor_telegram_id=actor_telegram_id,
+        entity_type="order",
+        entity_id=str(order.id),
+    )
+
+
 def debt_level(balance: Decimal) -> str:
     s = get_settings()
     b = balance
@@ -234,19 +280,36 @@ def debt_level(balance: Decimal) -> str:
 def _declined_driver_ids(order: Order) -> List[int]:
     rows = OrderDriverAssignment.select(OrderDriverAssignment.driver).where(
         (OrderDriverAssignment.order_id == order.id)
-        & (OrderDriverAssignment.status.in_([
-            AssignmentStatus.DECLINED.value,
-        ]))
+        & (OrderDriverAssignment.status.in_([AssignmentStatus.DECLINED.value]))
     )
     return [_assignment_driver_pk(r) for r in rows]
 
 
+def _busy_suggested_driver_ids() -> set[int]:
+    rows = OrderDriverAssignment.select(OrderDriverAssignment.driver_id).where(
+        OrderDriverAssignment.status == AssignmentStatus.SUGGESTED.value
+    )
+    return {r.driver_id for r in rows}
+
+
+def order_ready_for_dispatch(order: Order) -> bool:
+    if order.status != OrderStatus.NEW.value:
+        if order.status == OrderStatus.AWAITING_PAYMENT.value:
+            return order.passenger_payment_status == PassengerPaymentStatus.PAID.value
+        return False
+    if order.passenger_payment_status == PassengerPaymentStatus.AWAITING.value:
+        return False
+    return True
+
+
 def suggest_driver_for_order(order: Order) -> Optional[OrderDriverAssignment]:
-    """Pick the best eligible driver from FIFO queue and create a SUGGESTED assignment."""
+    if not order_ready_for_dispatch(order):
+        return None
     direction = order.direction
-    excluded = set(_declined_driver_ids(order))
+    excluded = set(_declined_driver_ids(order)) | _busy_suggested_driver_ids()
 
     from app.models import QueueEntry
+
     candidates = (
         QueueEntry.select(QueueEntry, DriverProfile)
         .join(DriverProfile, on=(QueueEntry.driver_id == DriverProfile.id))
@@ -267,9 +330,7 @@ def suggest_driver_for_order(order: Order) -> Optional[OrderDriverAssignment]:
             continue
 
         now = datetime.now(timezone.utc)
-        OrderDriverAssignment.update(
-            status=AssignmentStatus.DECLINED.value,
-        ).where(
+        OrderDriverAssignment.update(status=AssignmentStatus.DECLINED.value).where(
             (OrderDriverAssignment.order_id == order.id)
             & (OrderDriverAssignment.status == AssignmentStatus.SUGGESTED.value)
         ).execute()
@@ -288,6 +349,48 @@ def suggest_driver_for_order(order: Order) -> Optional[OrderDriverAssignment]:
         )
         return ass
     return None
+
+
+def auto_assign_pending_orders(driver: DriverProfile) -> List[Order]:
+    """Assign more new orders to driver if auto_assign enabled and capacity allows."""
+    if not get_settings().auto_assign_enabled:
+        return []
+    if not driver.direction_id or driver.status != "active":
+        return []
+    assigned: List[Order] = []
+    while True:
+        occ = occupied_seats_for_driver(driver)
+        pending_count = (
+            OrderDriverAssignment.select()
+            .where(
+                (OrderDriverAssignment.driver_id == driver.id)
+                & (OrderDriverAssignment.status == AssignmentStatus.PENDING.value)
+            )
+            .count()
+        )
+        own = int(getattr(driver, "own_seats_reserved", 0) or 0)
+        free = driver.max_seats - own - occ - pending_count
+        if free <= 0:
+            break
+        order = (
+            Order.select()
+            .where(
+                (Order.direction_id == driver.direction_id)
+                & (Order.status == OrderStatus.NEW.value)
+            )
+            .order_by(Order.id)
+            .first()
+        )
+        if not order or not order_ready_for_dispatch(order):
+            break
+        if order.seats > free:
+            break
+        try:
+            assign_order_to_driver(order, driver)
+            assigned.append(order)
+        except ValueError:
+            break
+    return assigned
 
 
 def get_suggestion(order: Order) -> Optional[OrderDriverAssignment]:
@@ -309,7 +412,6 @@ def confirm_suggestion(
     pickup_time_text: Optional[str] = None,
     actor_telegram_id: Optional[int] = None,
 ) -> OrderDriverAssignment:
-    """Admin confirms the system-suggested driver — performs the real assignment."""
     order = Order.get_by_id(assignment.order_id)
     driver = DriverProfile.get_by_id(assignment.driver_id)
 
@@ -329,12 +431,14 @@ def confirm_suggestion(
         assigned_at=now,
     ).where(OrderDriverAssignment.id == assignment.id).execute()
 
+    _set_platform_seats(order, driver)
     Order.update(
         status=OrderStatus.ASSIGNED.value,
         pickup_location=pickup_location,
         pickup_time_text=pickup_time_text,
         updated_at=now,
     ).where(Order.id == order.id).execute()
+    update_driver_loading(driver)
 
     audit_service.log_action(
         "suggestion_confirmed",
@@ -343,6 +447,7 @@ def confirm_suggestion(
         entity_id=str(order.id),
         payload={"driver_id": driver.id},
     )
+    auto_assign_pending_orders(driver)
     return OrderDriverAssignment.get_by_id(assignment.id)
 
 
@@ -351,7 +456,6 @@ def reject_suggestion(
     *,
     actor_telegram_id: Optional[int] = None,
 ) -> Optional[OrderDriverAssignment]:
-    """Admin rejects suggested driver. Returns next suggestion if available."""
     now = datetime.now(timezone.utc)
     OrderDriverAssignment.update(
         status=AssignmentStatus.DECLINED.value,

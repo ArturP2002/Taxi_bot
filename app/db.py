@@ -52,6 +52,9 @@ def init_db() -> None:
     db = get_db()
     db.connect(reuse_if_open=True)
     db.create_tables(ALL_MODELS, safe=True)
+    from app.migrations import run_migrations
+
+    run_migrations()
 
 
 def ensure_connection() -> None:

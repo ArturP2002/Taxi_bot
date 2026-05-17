@@ -3,6 +3,7 @@ from aiogram.fsm.state import State, StatesGroup
 
 class PassengerOrder(StatesGroup):
     choosing_direction = State()
+    direction_search = State()
     from_location = State()
     to_location = State()
     seats = State()
@@ -10,16 +11,28 @@ class PassengerOrder(StatesGroup):
 
 
 class DriverRegister(StatesGroup):
+    route_from = State()
+    route_to = State()
+    return_route = State()
     full_name = State()
     car_info = State()
     phone = State()
+    max_seats = State()
+    own_seats = State()
+    price_per_seat = State()
+    fixed_price = State()
 
 
 class ProposeDirection(StatesGroup):
     from_label = State()
     to_label = State()
+    return_route = State()
     eta_min = State()
     comment = State()
+
+
+class DriverOnlineSetup(StatesGroup):
+    own_seats = State()
 
 
 class DriverCode(StatesGroup):
@@ -32,3 +45,8 @@ class RelayChat(StatesGroup):
 
 class DriverRelayChat(StatesGroup):
     active = State()
+
+
+class AdminRelayChat(StatesGroup):
+    active = State()
+    order_id = State()

@@ -1,6 +1,8 @@
 import enum
 
-from peewee import ForeignKeyField, TextField, IntegerField, CharField, DateTimeField
+from decimal import Decimal
+
+from peewee import ForeignKeyField, TextField, IntegerField, CharField, DateTimeField, DecimalField
 
 from app.models.base import BaseModel
 from app.models.driver import DriverProfile
@@ -19,6 +21,10 @@ class ProposedDirection(BaseModel):
     from_label = TextField()
     to_label = TextField()
     estimated_time_min = IntegerField()
+    max_seats = IntegerField(default=6)
+    own_seats = IntegerField(default=0)
+    price_per_seat = DecimalField(max_digits=12, decimal_places=2, default=Decimal("0"))
+    fixed_price = DecimalField(max_digits=12, decimal_places=2, default=Decimal("0"))
     comment = TextField(null=True)
     status = CharField(max_length=32, default=ProposedStatus.PENDING.value)
     created_direction = ForeignKeyField(Direction, null=True, backref="from_proposal", on_delete="SET NULL")

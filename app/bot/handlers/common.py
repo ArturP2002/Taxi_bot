@@ -7,6 +7,7 @@ from aiogram.types import Message, CallbackQuery, WebAppInfo, InlineKeyboardMark
 from app.config import get_settings
 from app.bot import keyboards
 from app.bot.users import ensure_user, is_admin
+from app.services import admin_relay
 
 router = Router(name="common")
 
@@ -170,3 +171,40 @@ async def admin_reject_suggestion(cb: CallbackQuery, bot: Bot) -> None:
         await notify_suggestion_update(bot, order.id)
 
     await cb.answer("Отклонено")
+
+
+@router.message(F.reply_to_message)
+async def admin_reply_relay(message: Message, bot: Bot) -> None:
+    if not is_admin(message.from_user.id):
+        return
+    if not message.text:
+        return
+    replied = message.reply_to_message
+    if not replied or not replied.text:
+        return
+    text = replied.text
+    target_id = None
+    if "TG " in text:
+        for part in text.split():
+            if part.startswith("TG") and part[2:].isdigit():
+                target_id = int(part[2:])
+                break
+            if part.isdigit() and "TG" in text:
+                try:
+                    idx = text.find("TG")
+                    chunk = text[idx:].split()[0].replace("TG", "").strip()
+                    if chunk.isdigit():
+                        target_id = int(chunk)
+                except Exception:
+                    pass
+    if not target_id:
+        import re
+        m = re.search(r"TG\s*(\d+)", text)
+        if m:
+            target_id = int(m.group(1))
+    if target_id:
+        ok = await admin_relay.relay_admin_reply(bot, message.from_user.id, target_id, message.text)
+        if ok:
+            await message.answer("Ответ отправлен.")
+        else:
+            await message.answer("Не удалось отправить ответ.")
