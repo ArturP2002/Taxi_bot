@@ -703,7 +703,7 @@ def list_proposals(status: Optional[str] = ProposedStatus.PENDING.value) -> Any:
 
 @router.get("/proposals/grouped")
 def list_proposals_grouped(status: Optional[str] = ProposedStatus.PENDING.value) -> Any:
-    from app.services.proposed_service import normalize_route_label
+    from app.services.route_labels import normalize_route_label
 
     proposals = list_proposals(status)
     groups: dict[str, list] = {}

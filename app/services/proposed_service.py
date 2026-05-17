@@ -4,10 +4,7 @@ from typing import Optional
 
 from app.models import Direction, DriverProfile, ProposedDirection, ProposedStatus, DirectionPioneer
 from app.services import audit_service, queue_service, direction_pairs
-
-
-def normalize_route_label(label: str) -> str:
-    return " ".join(label.strip().lower().split())
+from app.services.route_labels import normalize_route_label
 
 
 def approve_proposal(

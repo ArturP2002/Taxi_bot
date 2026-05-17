@@ -7,7 +7,7 @@ from decimal import Decimal
 from typing import List, Optional, Tuple
 
 from app.models import Direction, DriverProfile, ProposedDirection, ProposedStatus, DirectionPioneer
-from app.services.proposed_service import normalize_route_label
+from app.services.route_labels import normalize_route_label
 
 
 @dataclass
