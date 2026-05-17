@@ -518,7 +518,8 @@ function renderDirections() {
   api('/api/admin/directions').then(function(data) {
     var directions = ensureArray(data);
     cache.directions = directions;
-    var html = '<div class="actions" style="margin-bottom:12px"><button class="btn btn-gold" onclick="showCreateDirection()">+ Новый маршрут</button></div>';
+    var html = '<p style="font-size:12px;color:var(--text-dim);margin-bottom:10px">' + 'Нажмите <b style="color:var(--gold)">✏️ Редактировать</b>' + ' на карточке маршрута (вкладка «Маршруты»).</p>';
+    html += '<div class="actions" style="margin-bottom:12px"><button class="btn btn-gold" onclick="showCreateDirection()">+ Новый маршрут</button></div>';
     if (directions.length === 0) {
       html += '<div class="empty">Нет маршрутов</div>';
     }
@@ -535,8 +536,8 @@ function renderDirections() {
         if (revD) html += row('↩ Обратно', revD.from_label + ' → ' + revD.to_label);
       } else html += row('Обратный ID', '—');
       html += '<div class="actions">';
+      html += '<button class="btn btn-gold" onclick="showEditDirection(' + d.id + ')">✏️ Редактировать</button>';
       if (d.enabled) {
-        html += '<button class="btn btn-outline" onclick="showEditDirection(' + d.id + ')">Редактировать</button>';
         html += '<button class="btn btn-danger" onclick="toggleDirection(' + d.id + ',false)">Выключить</button>';
       } else {
         html += '<button class="btn btn-success" onclick="toggleDirection(' + d.id + ',true)">Включить</button>';
@@ -578,26 +579,36 @@ function showCreateDirection() {
 
 function showEditDirection(dirId) {
   var d = cache.directions.find(function(x) { return x.id === dirId; });
-  if (!d) return;
-  var html = '<h3>Редактировать маршрут</h3>';
-  html += '<div class="form-group"><label>Откуда</label><input id="e-from" value="' + d.from_label + '"/></div>';
-  html += '<div class="form-group"><label>Куда</label><input id="e-to" value="' + d.to_label + '"/></div>';
-  html += '<div class="form-group"><label>Цена/место</label><input id="e-price" type="number" value="' + d.price_per_seat + '"/></div>';
-  html += '<div class="form-group"><label>Фикс</label><input id="e-fixed" type="number" value="' + d.fixed_price + '"/></div>';
-  html += '<div class="actions"><button class="btn btn-gold" onclick="doEditDirection(' + dirId + ')">Сохранить</button></div>';
+  if (!d) { toast('Маршрут не найден'); return; }
+  var esc = function(s) { return String(s || '').replace(/"/g, '&quot;'); };
+  var html = '<h3>✏️ Редактировать маршрут #' + dirId + '</h3>';
+  html += '<div class="form-group"><label>Откуда</label><input id="e-from" value="' + esc(d.from_label) + '"/></div>';
+  html += '<div class="form-group"><label>Куда</label><input id="e-to" value="' + esc(d.to_label) + '"/></div>';
+  html += '<div class="form-group"><label>Время в пути (мин)</label><input id="e-eta" type="number" value="' + d.estimated_time_min + '"/></div>';
+  html += '<div class="form-group"><label>Мин. время (%)</label><input id="e-minpct" type="number" value="' + d.min_time_percent + '"/></div>';
+  html += '<div class="form-group"><label>Цена за место (₽)</label><input id="e-price" type="number" value="' + d.price_per_seat + '"/></div>';
+  html += '<div class="form-group"><label>Фикс. цена (₽)</label><input id="e-fixed" type="number" value="' + d.fixed_price + '"/></div>';
+  html += '<div class="form-group"><label>Вместимость</label><input id="e-cap" type="number" value="' + d.vehicle_capacity_default + '"/></div>';
+  html += '<div class="form-group"><label><input type="checkbox" id="e-pay"' + (d.online_payment_required ? ' checked' : '') + '/> Оплата пассажиром онлайн</label></div>';
+  html += '<div class="actions"><button class="btn btn-gold" onclick="doEditDirection(' + dirId + ')">Сохранить</button>';
+  html += '<button class="btn btn-outline" onclick="closeModal()">Отмена</button></div>';
   openModal(html);
 }
 function doEditDirection(dirId) {
   api('/api/admin/directions/' + dirId, {
     method: 'PUT',
     body: JSON.stringify({
-      from_label: document.getElementById('e-from').value,
-      to_label: document.getElementById('e-to').value,
+      from_label: document.getElementById('e-from').value.trim(),
+      to_label: document.getElementById('e-to').value.trim(),
+      estimated_time_min: parseInt(document.getElementById('e-eta').value) || 60,
+      min_time_percent: parseInt(document.getElementById('e-minpct').value) || 70,
       price_per_seat: parseFloat(document.getElementById('e-price').value) || 0,
-      fixed_price: parseFloat(document.getElementById('e-fixed').value) || 0
+      fixed_price: parseFloat(document.getElementById('e-fixed').value) || 0,
+      vehicle_capacity_default: parseInt(document.getElementById('e-cap').value) || 6,
+      online_payment_required: document.getElementById('e-pay').checked
     })
-  }).then(function() { closeModal(); toast('Сохранено'); renderDirections(); })
-    .catch(function(e) { toast(e.message); });
+  }).then(function() { closeModal(); toast('Маршрут сохранён'); renderDirections(); })
+    .catch(function(e) { toast('Ошибка: ' + e.message); });
 }
 
 function toggleDirection(dirId, enabled) {

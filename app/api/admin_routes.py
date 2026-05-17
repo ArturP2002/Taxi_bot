@@ -95,9 +95,10 @@ def update_direction(
     direction_id: int, body: DirectionUpdate, user: User = Depends(require_admin)
 ) -> Any:
     d = Direction.get_by_id(direction_id)
-    updates = {k: v for k, v in body.model_dump(exclude_unset=True).items() if v is not None}
-    if "reverse_direction_id" in body.model_dump(exclude_unset=True):
-        updates["reverse_direction"] = body.reverse_direction_id
+    data = body.model_dump(exclude_unset=True)
+    updates = dict(data)
+    if "reverse_direction_id" in data:
+        updates["reverse_direction"] = data["reverse_direction_id"]
         updates.pop("reverse_direction_id", None)
     if updates:
         Direction.update(**updates).where(Direction.id == d.id).execute()
