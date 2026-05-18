@@ -77,4 +77,5 @@ async def auth_telegram(request: Request, body: TelegramAuthIn) -> TelegramAuthO
         raise
     except Exception as e:
         logger.exception("auth_telegram failed: %s", e)
-        raise HTTPException(status_code=500, detail="auth_failed") from e
+        detail = f"auth_failed: {type(e).__name__}: {str(e)[:200]}"
+        raise HTTPException(status_code=500, detail=detail) from e

@@ -24,6 +24,7 @@ from app.models import (
     AssignmentStatus,
     ProposedDirection,
     ProposedStatus,
+    QueueEntry,
     User,
     UserRole,
 )
