@@ -107,12 +107,15 @@ var token = '';
 var cache = { orders: [], drivers: [], directions: [] };
 
 var AUTH_ERRORS = {
-  bad_init_data: 'Сессия Telegram устарела. Закройте админку и откройте снова.',
   not_admin: 'Нет доступа. Добавьте ваш Telegram ID в ADMIN_TELEGRAM_IDS.',
   admin_not_configured: 'На сервере не задан ADMIN_TELEGRAM_IDS.',
   unknown_user: 'Сессия устарела. Обновите страницу.',
   invalid_token: 'Сессия устарела. Обновите страницу.',
-  auth_failed: 'Ошибка входа. Проверьте BOT_TOKEN и логи сервера.',
+  auth_failed: 'Ошибка входа на сервере. Смотрите логи API.',
+  bad_init_data: 'Не прошла проверка Telegram. BOT_TOKEN должен быть от того же бота, из которого открыта админка.',
+  bot_token_missing: 'На сервере не задан BOT_TOKEN в .env.',
+  bad_response: 'Сервер вернул не JSON. Запущен ли API? MINI_APP_URL и ngrok должны вести на один домен.',
+  ngrok_html: 'Ngrok отдал HTML вместо API. Перезапустите туннель или откройте админку снова.',
   internal_server_error: 'Ошибка сервера. Перезапустите API и попробуйте снова.'
 };
 
@@ -127,6 +130,15 @@ function clearAuthToken() {
   localStorage.removeItem('admin_jwt');
 }
 
+function apiUrl(path, method) {
+  var sep = path.indexOf('?') === -1 ? '?' : '&';
+  var url = path + sep + 'ngrok-skip-browser-warning=1';
+  if ((method || 'GET').toUpperCase() === 'GET') {
+    url += '&_=' + Date.now();
+  }
+  return url;
+}
+
 function api(path, opts) {
   opts = opts || {};
   var headers = {
@@ -139,20 +151,22 @@ function api(path, opts) {
   opts.headers = headers;
   opts.cache = 'no-store';
   var method = (opts.method || 'GET').toUpperCase();
-  var url = path;
-  if (method === 'GET') {
-    url += (path.indexOf('?') === -1 ? '?' : '&') + '_=' + Date.now();
-  }
-  return fetch(url, opts).then(function(r) {
+  return fetch(apiUrl(path, method), opts).then(function(r) {
     return r.text().then(function(text) {
       var data;
-      try { data = JSON.parse(text); } catch(e) { data = text; }
+      try { data = JSON.parse(text); } catch(e) { data = null; }
+      if (data === null) {
+        if (text && (text.indexOf('<!DOCTYPE') !== -1 || text.indexOf('<html') !== -1)) {
+          throw new Error('ngrok_html');
+        }
+        throw new Error('bad_response');
+      }
       if (!r.ok) {
-        var detail = typeof data === 'object' ? data.detail : null;
+        var detail = data.detail || null;
         if (r.status === 401 && (detail === 'unknown_user' || detail === 'invalid_token')) {
           clearAuthToken();
         }
-        throw new Error(authErrorLabel(detail || (r.status === 500 ? 'internal_server_error' : String(data))));
+        throw new Error(authErrorLabel(detail || (r.status === 500 ? 'internal_server_error' : String(text))));
       }
       return data;
     });
@@ -172,7 +186,7 @@ function auth() {
   return api('/api/auth/telegram', { method: 'POST', body: JSON.stringify({ init_data: initData }) })
     .then(function(res) {
       if (!res || !res.access_token) {
-        throw new Error('auth_failed');
+        throw new Error('bad_response');
       }
       token = res.access_token;
       localStorage.setItem('admin_jwt', token);

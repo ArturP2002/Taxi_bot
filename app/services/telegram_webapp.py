@@ -14,6 +14,9 @@ def validate_init_data(init_data: str, *, max_age_seconds: Optional[int] = 86400
     """
     if not init_data:
         return None
+    bot_token = (get_settings().bot_token or "").strip()
+    if not bot_token:
+        return None
     parsed = dict(parse_qsl(init_data, keep_blank_values=True))
     hash_received = parsed.pop("hash", None)
     if not hash_received:
@@ -21,7 +24,7 @@ def validate_init_data(init_data: str, *, max_age_seconds: Optional[int] = 86400
     data_check_string = "\n".join(f"{k}={v}" for k, v in sorted(parsed.items()))
     secret_key = hmac.HMAC(
         b"WebAppData",
-        get_settings().bot_token.encode(),
+        bot_token.encode(),
         hashlib.sha256,
     ).digest()
     computed = hmac.HMAC(secret_key, data_check_string.encode(), hashlib.sha256).hexdigest()

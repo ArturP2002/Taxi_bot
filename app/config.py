@@ -2,15 +2,30 @@ import logging
 from functools import lru_cache
 from typing import FrozenSet
 
+from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 logger = logging.getLogger("taxi_bot.config")
+
+
+def _strip_env_quotes(value: object) -> object:
+    if value is None:
+        return ""
+    s = str(value).strip()
+    if len(s) >= 2 and s[0] == s[-1] and s[0] in ("'", '"'):
+        return s[1:-1].strip()
+    return s
 
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 
     bot_token: str = ""
+
+    @field_validator("bot_token", "secret_key", "code_pepper", mode="before")
+    @classmethod
+    def strip_quoted_env(cls, value: object) -> object:
+        return _strip_env_quotes(value)
     webhook_secret: str = ""
     webhook_path: str = "/webhook/telegram"
     base_url: str = "http://127.0.0.1:8000"

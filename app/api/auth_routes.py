@@ -26,14 +26,25 @@ class TelegramAuthOut(BaseModel):
 
 @router.post("/telegram", response_model=TelegramAuthOut)
 @limiter.limit("30/minute")
-def auth_telegram(request: Request, body: TelegramAuthIn) -> TelegramAuthOut:
+async def auth_telegram(request: Request, body: TelegramAuthIn) -> TelegramAuthOut:
+    from app.db import ensure_connection
+
     try:
+        ensure_connection()
+        settings = get_settings()
+        if not (settings.bot_token or "").strip():
+            logger.error("BOT_TOKEN is empty")
+            raise HTTPException(status_code=503, detail="bot_token_missing")
         parsed = validate_init_data(body.init_data)
         if not parsed or not parsed.get("user"):
+            logger.warning(
+                "bad_init_data (hash/date/user). bot_token set=%s init_len=%s",
+                bool(settings.bot_token),
+                len(body.init_data or ""),
+            )
             raise HTTPException(status_code=401, detail="bad_init_data")
         tg_user = parsed["user"]
         tid = int(tg_user["id"])
-        settings = get_settings()
         if not settings.admin_ids:
             logger.error("ADMIN_TELEGRAM_IDS is empty")
             raise HTTPException(status_code=503, detail="admin_not_configured")
