@@ -19,6 +19,7 @@ from app.models.financial import (
     PaymentPayerType,
 )
 from app.models.audit import AuditLog
+from app.models.driver_event import DriverEvent, DriverEventType
 
 ALL_MODELS = [
     User,
@@ -33,6 +34,7 @@ ALL_MODELS = [
     CommissionLedger,
     PaymentRecord,
     AuditLog,
+    DriverEvent,
 ]
 
 __all__ = [
@@ -58,4 +60,6 @@ __all__ = [
     "PaymentStatus",
     "PaymentPayerType",
     "AuditLog",
+    "DriverEvent",
+    "DriverEventType",
 ]

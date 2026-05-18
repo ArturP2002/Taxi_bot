@@ -35,6 +35,7 @@
     .b-pending{background:rgba(245,197,24,.15);color:var(--gold)}
     .b-active{background:rgba(63,185,80,.15);color:var(--success)}
     .b-blocked{background:rgba(248,81,73,.15);color:var(--danger)}
+    .b-suspicious{background:rgba(255,140,0,.18);color:#ff8c00}
     .b-confirmed{background:rgba(63,185,80,.15);color:var(--success)}
     .b-awaiting_admin{background:rgba(245,197,24,.15);color:var(--gold)}
     .b-suggested{background:rgba(88,166,255,.15);color:var(--info)}
@@ -254,7 +255,7 @@ function renderTab(tab) {
 }
 
 function statusLabel(s) {
-  var m = { new:'Новый', assigned:'Назначен', in_progress:'В пути', completed:'Завершён', admin_review:'На проверке', awaiting_payment:'Ждёт оплату', cancelled:'Отменён', pending:'Ожидает', confirmed:'Подтверждён', awaiting_admin:'Ждёт админа', active:'Активен', blocked:'Заблокирован', failed:'Ошибка', suggested:'Предложен' };
+  var m = { new:'Новый', assigned:'Назначен', in_progress:'В пути', completed:'Завершён', admin_review:'На проверке', awaiting_payment:'Ждёт оплату', cancelled:'Отменён', pending:'Ожидает', confirmed:'Подтверждён', awaiting_admin:'Ждёт админа', active:'Активен', suspicious:'На проверке', blocked:'Заблокирован', failed:'Ошибка', suggested:'Предложен' };
   return m[s] || s;
 }
 function fmtHours(min) {
@@ -291,6 +292,7 @@ function renderDashboard() {
       var newO = orders.filter(function(o){return o.status==='new'}).length;
       var needDrv = orders.filter(function(o){return o.suggestion}).length;
       var pendingDrv = drivers.filter(function(d){return d.status==='pending'}).length;
+      var suspiciousDrv = drivers.filter(function(d){return d.status==='suspicious'}).length;
       var activeO = orders.filter(function(o){return o.status==='in_progress'}).length;
       var online = drivers.filter(function(d){return d.online}).length;
       var debt = drivers.reduce(function(s,d){return s + parseFloat(d.balance||0)}, 0);
@@ -299,6 +301,7 @@ function renderDashboard() {
       html += '<div class="stats-grid">';
       html += stat(needDrv, 'Ждут водителя');
       html += stat(pendingDrv, 'Новые водители');
+      html += stat(suspiciousDrv, 'На проверке');
       html += stat(newO, 'Новые заказы');
       html += stat(activeO, 'В пути');
       html += stat(online, 'Онлайн');
@@ -520,7 +523,20 @@ function renderDrivers() {
       cache.drivers = drivers; cache.directions = directions;
       if (drivers.length === 0) { content.innerHTML = '<div class="empty">Нет водителей</div>'; return; }
       var pendingList = drivers.filter(function(d){ return d.status === 'pending'; });
+      var suspiciousList = drivers.filter(function(d){ return d.status === 'suspicious'; });
       var html = '';
+      if (suspiciousList.length > 0) {
+        html += cardStart('⚠️ Подозрительные / кассовые (' + suspiciousList.length + ')', 'suspicious');
+        for (var si = 0; si < suspiciousList.length; si++) {
+          var sd = suspiciousList[si];
+          html += row(sd.full_name || 'ID:' + sd.id, 'TG ' + sd.telegram_id);
+          html += row('30 дн.', 'отказов ' + (sd.declines_30d||0) + ', отмен ' + (sd.order_cancellations_30d||0) + ', рейсов ' + (sd.trips_completed_30d||0));
+          html += row('Риск', sd.risk_label || '—');
+          html += '<div class="actions"><button class="btn btn-success" onclick="clearSuspicious(' + sd.id + ')">Снять проверку</button>';
+          html += '<button class="btn btn-danger" onclick="blockDriver(' + sd.id + ')">Заблокировать</button></div>';
+        }
+        html += cardEnd();
+      }
       if (pendingList.length > 0) {
         html += cardStart('⏳ Подтвердить водителей (' + pendingList.length + ')', 'pending');
         for (var pi = 0; pi < pendingList.length; pi++) {
@@ -548,12 +564,22 @@ function renderDrivers() {
         html += row('Онлайн', d.online ? '🟢 Да' : '🔴 Нет');
         html += row('Загрузка', d.loading ? 'да' : 'нет');
         if (d.rest_until) html += row('Отдых до', d.rest_until);
+        if (d.declines_30d || d.order_cancellations_30d) {
+          html += row('30 дн.', 'отказов ' + (d.declines_30d||0) + ', отмен ' + (d.order_cancellations_30d||0) + ', рейсов ' + (d.trips_completed_30d||0));
+        }
+        if (d.risk_label && d.risk_label !== 'ok') html += row('Риск', d.risk_label);
         html += '<div class="actions">';
         if (d.status === 'pending') html += '<button class="btn btn-success" onclick="showApproveDriver(' + d.id + ')">Подтвердить</button>';
         if (d.status === 'active') {
           html += '<button class="btn btn-gold" onclick="showChangeDirection(' + d.id + ',' + (d.direction_id || 'null') + ')">Направление</button>';
           html += '<button class="btn btn-outline" onclick="showEditDriver(' + d.id + ')">✏️ Параметры</button>';
+          html += '<button class="btn btn-outline" onclick="markSuspicious(' + d.id + ')">На проверку</button>';
           html += '<button class="btn btn-danger" onclick="blockDriver(' + d.id + ')">Блокировать</button>';
+        }
+        if (d.status === 'suspicious') {
+          html += '<button class="btn btn-success" onclick="clearSuspicious(' + d.id + ')">Снять проверку</button>';
+          html += '<button class="btn btn-gold" onclick="showChangeDirection(' + d.id + ',' + (d.direction_id || 'null') + ')">Направление</button>';
+          html += '<button class="btn btn-danger" onclick="blockDriver(' + d.id + ')">Заблокировать</button>';
         }
         if (d.status === 'blocked') html += '<button class="btn btn-success" onclick="showApproveDriver(' + d.id + ')">Разблокировать</button>';
         html += '</div>';
@@ -618,6 +644,17 @@ function doApproveDriver(driverId) {
     .catch(function(e) { toast('Ошибка: ' + e.message); });
 }
 
+function clearSuspicious(driverId) {
+  api('/api/admin/drivers/' + driverId + '/clear-suspicious', { method: 'POST' })
+    .then(function() { toast('Проверка снята'); renderDrivers(); })
+    .catch(function(e) { toast('Ошибка: ' + e.message); });
+}
+function markSuspicious(driverId) {
+  if (!confirm('Перевести водителя на проверку? Он не сможет выйти на линию.')) return;
+  api('/api/admin/drivers/' + driverId + '/mark-suspicious', { method: 'POST' })
+    .then(function() { toast('На проверке'); renderDrivers(); })
+    .catch(function(e) { toast('Ошибка: ' + e.message); });
+}
 function blockDriver(driverId) {
   api('/api/admin/drivers/' + driverId + '/block', { method: 'POST' })
     .then(function() { toast('Заблокирован'); renderDrivers(); })

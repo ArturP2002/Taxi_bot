@@ -135,11 +135,41 @@ async def notify_payment_received(bot: Bot, driver_name: str, amount, payment_id
     await notify_admins(bot, text)
 
 
-async def notify_driver_declined(bot: Bot, order_id: int, driver_name: str) -> None:
+async def notify_driver_declined(
+    bot: Bot,
+    order_id: int,
+    driver_name: str,
+    *,
+    driver_id: int | None = None,
+    stats: dict | None = None,
+) -> None:
     text = (
         f"❌ Водитель отказался от заказа #{order_id}\n"
-        f"Водитель: {driver_name}\n\n"
-        "Назначьте другого в админке."
+        f"Водитель: {driver_name}\n"
+    )
+    if stats:
+        text += (
+            f"За 30 дн.: отказов {stats.get('declines', 0)}, "
+            f"отмен по заказам {stats.get('order_cancellations', 0)}, "
+            f"завершено {stats.get('trips_completed', 0)}\n"
+        )
+    text += "\nНазначьте другого в админке."
+    await notify_admins(bot, text)
+
+
+async def notify_driver_suspicious(
+    bot: Bot,
+    driver_name: str,
+    driver_id: int,
+    stats: dict,
+) -> None:
+    text = (
+        f"⚠️ Водитель на проверке (подозрительный)\n"
+        f"{driver_name} · ID {driver_id}\n"
+        f"Отказов (30 дн.): {stats.get('declines', 0)}\n"
+        f"Отмен по заказам: {stats.get('order_cancellations', 0)}\n"
+        f"Завершённых поездок: {stats.get('trips_completed', 0)}\n\n"
+        "Вкладка «Водители» — решите: снять статус или заблокировать."
     )
     await notify_admins(bot, text)
 

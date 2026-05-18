@@ -56,6 +56,11 @@ class Settings(BaseSettings):
     queue_loading_gap_min: int = 30
     queue_default_rest_min: int = 0
 
+    # Driver risk (30 days window)
+    driver_declines_suspicious_30d: int = 5
+    driver_cancels_suspicious_30d: int = 3
+    driver_decline_rate_suspicious: float = 0.55
+
     @property
     def admin_ids(self) -> FrozenSet[int]:
         if not self.admin_telegram_ids.strip():

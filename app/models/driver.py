@@ -12,6 +12,7 @@ from app.util.datetimeutil import utcnow
 class DriverStatus(str, enum.Enum):
     PENDING = "pending"
     ACTIVE = "active"
+    SUSPICIOUS = "suspicious"
     BLOCKED = "blocked"
 
 

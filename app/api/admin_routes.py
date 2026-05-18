@@ -213,9 +213,22 @@ def patch_order(order_id: int, body: OrderPatchIn, user: User = Depends(require_
 
 
 @router.post("/orders/{order_id}/cancel")
-def cancel_order_endpoint(order_id: int, user: User = Depends(require_admin)) -> Any:
+async def cancel_order_endpoint(
+    order_id: int, request: Request, user: User = Depends(require_admin)
+) -> Any:
+    from app.services import driver_risk_service
+    from app.services.admin_notify import notify_driver_suspicious
+
     o = Order.get_by_id(order_id)
-    order_service.cancel_order(o, actor_telegram_id=user.telegram_id)
+    linked = order_service.cancel_order(o, actor_telegram_id=user.telegram_id)
+    if linked:
+        d = DriverProfile.get_by_id(linked)
+        if d.status == DriverStatus.SUSPICIOUS.value:
+            bot = _bot(request)
+            stats = driver_risk_service.driver_risk_stats(d.id)
+            await notify_driver_suspicious(
+                bot, d.full_name or f"ID:{d.id}", d.id, stats
+            )
     return {"ok": True}
 
 
@@ -471,15 +484,20 @@ class DriverOut(BaseModel):
     loading: bool = False
     rest_until: Optional[str] = None
     draft_route: Optional[str] = None
+    declines_30d: int = 0
+    order_cancellations_30d: int = 0
+    trips_completed_30d: int = 0
+    risk_label: str = "ok"
 
 
 @router.get("/drivers", response_model=List[DriverOut])
 def list_drivers() -> Any:
-    from app.services import driver_registration
+    from app.services import driver_registration, driver_risk_service
 
     out: List[DriverOut] = []
     for d in DriverProfile.select():
         u = User.get_by_id(d.user_id)
+        stats = driver_risk_service.driver_risk_stats(d.id)
         out.append(
             DriverOut(
                 id=d.id,
@@ -496,9 +514,21 @@ def list_drivers() -> Any:
                 loading=getattr(d, "loading", False),
                 rest_until=str(d.rest_until) if getattr(d, "rest_until", None) else None,
                 draft_route=driver_registration.draft_route_label(d),
+                declines_30d=stats["declines"],
+                order_cancellations_30d=stats["order_cancellations"],
+                trips_completed_30d=stats["trips_completed"],
+                risk_label=stats["risk_label"],
             )
         )
     return out
+
+
+@router.get("/drivers/{driver_id}/risk")
+def driver_risk(driver_id: int) -> Any:
+    from app.services import driver_risk_service
+
+    d = DriverProfile.get_by_id(driver_id)
+    return driver_risk_service.driver_risk_stats(d.id)
 
 
 class DriverPatchIn(BaseModel):
@@ -539,6 +569,11 @@ def patch_driver(driver_id: int, body: DriverPatchIn, user: User = Depends(requi
         updates["rest_until"] = None
     if rest_hours is not None:
         updates["rest_until"] = datetime.now(timezone.utc) + timedelta(hours=max(1, rest_hours))
+    if "direction_id" in updates:
+        raise HTTPException(
+            status_code=400,
+            detail="use_change_direction_endpoint",
+        )
     if updates:
         DriverProfile.update(**updates).where(DriverProfile.id == driver_id).execute()
     audit_service.log_action(
@@ -586,6 +621,67 @@ async def approve_driver(driver_id: int, body: ApproveDriverIn, request: Request
     except Exception:
         pass
     await notify_driver_approved_welcome(bot, drv_user.telegram_id)
+    return {"ok": True}
+
+
+@router.post("/drivers/{driver_id}/clear-suspicious")
+async def clear_driver_suspicious(
+    driver_id: int, request: Request, user: User = Depends(require_admin)
+) -> Any:
+    from app.services import driver_risk_service
+
+    d = DriverProfile.get_by_id(driver_id)
+    if d.status != DriverStatus.SUSPICIOUS.value:
+        raise HTTPException(status_code=400, detail="not_suspicious")
+    driver_risk_service.clear_suspicious(driver_id)
+    audit_service.log_action(
+        "driver_clear_suspicious",
+        actor_telegram_id=user.telegram_id,
+        entity_type="driver",
+        entity_id=str(driver_id),
+    )
+    bot = _bot(request)
+    drv_user = User.get_by_id(d.user_id)
+    try:
+        await bot.send_message(
+            drv_user.telegram_id,
+            "✅ Проверка завершена. Можете снова выходить на линию («🟢 Онлайн»).",
+        )
+    except Exception:
+        pass
+    return {"ok": True}
+
+
+@router.post("/drivers/{driver_id}/mark-suspicious")
+async def mark_driver_suspicious(
+    driver_id: int, request: Request, user: User = Depends(require_admin)
+) -> Any:
+    from app.services import driver_risk_service
+    from app.services.admin_notify import notify_driver_suspicious
+
+    d = DriverProfile.get_by_id(driver_id)
+    DriverProfile.update(status=DriverStatus.SUSPICIOUS.value, online=False).where(
+        DriverProfile.id == driver_id
+    ).execute()
+    if d.direction_id:
+        queue_service.remove_from_queue(Direction.get_by_id(d.direction_id), d)
+    audit_service.log_action(
+        "driver_mark_suspicious",
+        actor_telegram_id=user.telegram_id,
+        entity_type="driver",
+        entity_id=str(driver_id),
+    )
+    stats = driver_risk_service.driver_risk_stats(driver_id)
+    bot = _bot(request)
+    await notify_driver_suspicious(bot, d.full_name or f"ID:{d.id}", d.id, stats)
+    drv_user = User.get_by_id(d.user_id)
+    try:
+        await bot.send_message(
+            drv_user.telegram_id,
+            "⚠️ Аккаунт переведён на проверку. Свяжитесь с администратором.",
+        )
+    except Exception:
+        pass
     return {"ok": True}
 
 

@@ -36,6 +36,21 @@ MIGRATIONS: list[tuple[str, list[str]]] = [
             "ALTER TABLE orders ADD COLUMN pickup_surcharge DECIMAL(12,2) DEFAULT 0",
         ],
     ),
+    (
+        "20260518_v4",
+        [
+            """CREATE TABLE IF NOT EXISTS driver_events (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                driver_id INTEGER NOT NULL,
+                order_id INTEGER,
+                event_type VARCHAR(32) NOT NULL,
+                created_at TEXT NOT NULL,
+                FOREIGN KEY (driver_id) REFERENCES driver_profiles(id) ON DELETE CASCADE,
+                FOREIGN KEY (order_id) REFERENCES orders(id) ON DELETE SET NULL
+            )""",
+            "CREATE INDEX IF NOT EXISTS driver_events_driver_idx ON driver_events(driver_id, event_type, created_at)",
+        ],
+    ),
 ]
 
 

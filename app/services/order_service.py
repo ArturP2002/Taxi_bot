@@ -160,6 +160,9 @@ def driver_respond(assignment: OrderDriverAssignment, accept: bool) -> Order:
             entity_type="order",
             entity_id=str(order.id),
         )
+        from app.services import driver_risk_service
+
+        driver_risk_service.record_decline(driver.id, order.id)
     return Order.get_by_id(order.id)
 
 
@@ -266,18 +269,29 @@ def complete_order(order: Order, driver: DriverProfile) -> Tuple[bool, str]:
         entity_type="order",
         entity_id=str(order.id),
     )
+    from app.services import driver_risk_service
+
+    driver_risk_service.record_trip_completed(driver.id, order.id)
     return True, "ok"
 
 
-def cancel_order(order: Order, *, actor_telegram_id: Optional[int] = None) -> None:
+def cancel_order(order: Order, *, actor_telegram_id: Optional[int] = None) -> Optional[int]:
+    """Cancel order. Returns driver_id if a linked driver should be flagged for risk."""
     now = datetime.now(timezone.utc)
+    from app.services import driver_risk_service
+
+    linked_driver_id = driver_risk_service.driver_linked_to_cancelled_order(order)
     Order.update(status=OrderStatus.CANCELLED.value, updated_at=now).where(Order.id == order.id).execute()
     audit_service.log_action(
         "order_cancelled",
         actor_telegram_id=actor_telegram_id,
         entity_type="order",
         entity_id=str(order.id),
+        payload={"linked_driver_id": linked_driver_id} if linked_driver_id else None,
     )
+    if linked_driver_id:
+        driver_risk_service.record_order_cancelled_for_driver(linked_driver_id, order.id)
+    return linked_driver_id
 
 
 def debt_level(balance: Decimal) -> str:

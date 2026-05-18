@@ -30,6 +30,7 @@ DRIVER_MENU_TEXTS: frozenset[str] = frozenset({
     "🔍 Проверить платёж",
     "➕ Предложить маршрут",
     "😴 Отдых",
+    "🧭 Направление",
     "📞 Связь с админом",
     BTN_PASSENGER_MODE,
     "▶️ Старт поездки",
@@ -66,6 +67,7 @@ def main_driver_kb() -> ReplyKeyboardMarkup:
     b.button(text="🔍 Проверить платёж")
     b.button(text="➕ Предложить маршрут")
     b.button(text="😴 Отдых")
+    b.button(text="🧭 Направление")
     b.button(text="📞 Связь с админом")
     b.button(text=BTN_PASSENGER_MODE)
     b.adjust(2)

@@ -33,12 +33,14 @@ from app.models import PaymentRecord, PaymentStatus
 from app.services import queue_service, order_service
 from app.services.admin_notify import (
     notify_driver_declined,
+    notify_driver_suspicious,
     notify_proposal,
     notify_trip_completed,
     notify_payment_received,
     notify_trip_started,
     notify_driver_action,
 )
+from app.services import driver_risk_service
 from app.services import driver_registration as reg_service
 from app.util.time_format import minutes_to_hours_label, parse_hours_input
 
@@ -119,6 +121,16 @@ async def go_online(message: Message, state: FSMContext) -> None:
             f"({keyboards.BTN_CANCEL} — выйти в меню)",
             reply_markup=keyboards.cancel_kb(),
         )
+        return
+    if dprof.status == DriverStatus.SUSPICIOUS.value:
+        await message.answer(
+            "⚠️ Аккаунт на проверке администратором.\n"
+            "Выход на линию временно недоступен.\n"
+            "«📞 Связь с админом» — для разъяснений."
+        )
+        return
+    if dprof.status == DriverStatus.BLOCKED.value:
+        await message.answer("Аккаунт заблокирован. Обратитесь к администратору.")
         return
     if dprof.status != DriverStatus.ACTIVE.value:
         await message.answer("Ожидайте подтверждения администратора.")
@@ -341,11 +353,19 @@ async def decline(cb: CallbackQuery, bot: Bot) -> None:
     if ass.driver_id != dprof.id:
         await cb.answer("Чужое назначение", show_alert=True)
         return
+    was_active = dprof.status == DriverStatus.ACTIVE.value
     order_service.driver_respond(ass, accept=False)
     await cb.message.answer("Отказ зафиксирован. Заказ возвращён администратору.")
     await cb.answer()
 
     order = Order.get_by_id(ass.order_id)
+    dprof = DriverProfile.get_by_id(dprof.id)
+    stats = driver_risk_service.driver_risk_stats(dprof.id)
+    if was_active and dprof.status == DriverStatus.SUSPICIOUS.value:
+        await notify_driver_suspicious(
+            bot, dprof.full_name or f"ID:{dprof.id}", dprof.id, stats
+        )
+
     new_suggestion = order_service.suggest_driver_for_order(order)
 
     if new_suggestion:
@@ -357,7 +377,13 @@ async def decline(cb: CallbackQuery, bot: Bot) -> None:
             assignment_id=new_suggestion.id,
         )
     else:
-        await notify_driver_declined(bot, ass.order_id, dprof.full_name or "Без имени")
+        await notify_driver_declined(
+            bot,
+            ass.order_id,
+            dprof.full_name or "Без имени",
+            driver_id=dprof.id,
+            stats=stats,
+        )
 
 
 @router.message(F.text == "😴 Отдых")
@@ -770,6 +796,22 @@ async def my_passengers(message: Message, state: FSMContext) -> None:
         f"Пассажиры ({len(rows)} заказов, {occ} мест):\n" + "\n".join(lines)
         + f"\n\nСвободно для платформы: {snap.free_seats} мест"
         + extra
+    )
+
+
+@router.message(F.text == "🧭 Направление")
+async def driver_direction_info(message: Message) -> None:
+    ensure_user(message.from_user, prefer_driver=True)
+    u = User.get(telegram_id=message.from_user.id)
+    dprof = DriverProfile.get(user=u)
+    dir_name = "—"
+    if dprof.direction_id:
+        d = Direction.get_by_id(dprof.direction_id)
+        dir_name = f"{d.from_label} → {d.to_label}"
+    await message.answer(
+        f"Текущее направление: {dir_name}\n\n"
+        "Сменить направление может только администратор.\n"
+        "Напишите в «📞 Связь с админом» — укажите желаемый маршрут."
     )
 
 
