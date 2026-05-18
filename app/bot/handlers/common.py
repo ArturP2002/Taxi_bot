@@ -2,14 +2,42 @@ import time
 
 from aiogram import Router, F, Bot
 from aiogram.filters import CommandStart, Command
+from aiogram.fsm.context import FSMContext
 from aiogram.types import Message, CallbackQuery, WebAppInfo, InlineKeyboardMarkup, InlineKeyboardButton
 
 from app.config import get_settings
 from app.bot import keyboards
+from app.bot.messages import send_passenger_rules, send_driver_rules
 from app.bot.users import ensure_user, is_admin
 from app.services import admin_relay
 
 router = Router(name="common")
+
+
+@router.message(F.text.contains("Заказать поездку"))
+@router.message(Command("order"))
+async def handle_order_ride(message: Message, state: FSMContext) -> None:
+    await state.clear()
+    ensure_user(message.from_user)
+    from app.bot.handlers.passenger import continue_start_order
+
+    await continue_start_order(message, state)
+
+
+@router.message(F.text.contains("Я водитель"))
+@router.message(Command("driver"))
+async def handle_driver_mode(message: Message, state: FSMContext) -> None:
+    await state.clear()
+    ensure_user(message.from_user, prefer_driver=True)
+    await send_driver_rules(message, reply_markup=keyboards.main_driver_kb())
+
+
+@router.message(F.text.contains("Режим пассажира"))
+@router.message(Command("passenger"))
+async def handle_passenger_mode(message: Message, state: FSMContext) -> None:
+    await state.clear()
+    ensure_user(message.from_user)
+    await send_passenger_rules(message, reply_markup=keyboards.main_passenger_kb())
 
 
 @router.message(CommandStart())

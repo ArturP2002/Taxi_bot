@@ -9,6 +9,7 @@ from aiogram.types import Message, CallbackQuery, BufferedInputFile
 
 from app.bot import keyboards
 from app.bot.states import PassengerOrder, RelayChat, AdminRelayChat
+from app.bot.messages import send_passenger_rules
 from app.bot.users import ensure_user
 from app.config import get_settings
 from app.models import Direction, Order, OrderStatus, PassengerPaymentStatus
@@ -46,6 +47,7 @@ async def _show_directions_page(message_or_cb, state: FSMContext, page: int = 0,
 
 
 async def continue_start_order(message: Message, state: FSMContext) -> None:
+    await send_passenger_rules(message)
     directions = direction_search.list_enabled_directions()
     if not directions:
         await message.answer("Направления пока недоступны.")

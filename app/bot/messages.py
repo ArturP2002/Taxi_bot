@@ -1,3 +1,5 @@
+from aiogram.types import Message
+
 PASSENGER_RULES = """📌 ПРАВИЛА ПАССАЖИРА
 
 — После оформления заказа вы получаете код и QR.
@@ -28,3 +30,11 @@ DRIVER_RULES = """📌 ПРАВИЛА ВОДИТЕЛЯ
 ❗ Если водитель начал поездку без подтверждения кода или QR, сервис не несёт ответственности за оплату, пассажиров и спорные ситуации.
 
 Спасибо за сотрудничество 🚕"""
+
+
+async def send_passenger_rules(message: Message, **kwargs) -> None:
+    await message.answer(PASSENGER_RULES, **kwargs)
+
+
+async def send_driver_rules(message: Message, **kwargs) -> None:
+    await message.answer(DRIVER_RULES, **kwargs)
