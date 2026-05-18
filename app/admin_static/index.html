@@ -480,6 +480,10 @@ function renderDrivers() {
         for (var pi = 0; pi < pendingList.length; pi++) {
           var pd = pendingList[pi];
           html += row(pd.full_name || 'ID:' + pd.id, 'TG ' + pd.telegram_id);
+          if (pd.draft_route) html += row('Маршрут', pd.draft_route);
+          if (pd.phone) html += row('Телефон', pd.phone);
+          if (pd.car_info) html += row('Авто', pd.car_info);
+          html += row('Мест', pd.max_seats + ' (своих: ' + (pd.own_seats_reserved || 0) + ')');
           html += '<div class="actions"><button class="btn btn-success" onclick="showApproveDriver(' + pd.id + ')">✅ Подтвердить</button></div>';
         }
         html += cardEnd();

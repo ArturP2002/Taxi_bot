@@ -31,10 +31,14 @@ from app.config import get_settings
 from app.models import PaymentRecord, PaymentStatus
 from app.services import queue_service, order_service
 from app.services.admin_notify import (
-    notify_driver_registered, notify_proposal, notify_driver_declined,
-    notify_trip_completed, notify_payment_received, notify_trip_started,
+    notify_driver_declined,
+    notify_proposal,
+    notify_trip_completed,
+    notify_payment_received,
+    notify_trip_started,
     notify_driver_action,
 )
+from app.services import driver_registration as reg_service
 from app.util.time_format import minutes_to_hours_label, parse_hours_input
 
 router = Router(name="driver")
@@ -889,7 +893,11 @@ async def propose_finish(message: Message, state: FSMContext, bot: Bot) -> None:
 
 @router.message(DriverRegister.route_from, F.text, _NOT_MENU_TEXT)
 async def reg_route_from(message: Message, state: FSMContext) -> None:
-    await state.update_data(route_from=message.text.strip())
+    route_from = message.text.strip()
+    await state.update_data(route_from=route_from)
+    ensure_user(message.from_user, prefer_driver=True)
+    dprof = DriverProfile.get(user=User.get(telegram_id=message.from_user.id))
+    reg_service.save_draft_route_from(dprof, route_from)
     await state.set_state(DriverRegister.route_to)
     await message.answer("Куда (город):")
 
@@ -899,6 +907,9 @@ async def reg_route_to(message: Message, state: FSMContext) -> None:
     to_city = message.text.strip()
     data = await state.get_data()
     await state.update_data(route_to=to_city)
+    ensure_user(message.from_user, prefer_driver=True)
+    dprof = DriverProfile.get(user=User.get(telegram_id=message.from_user.id))
+    reg_service.save_draft_route_to(dprof, to_city)
     await state.set_state(DriverRegister.return_route)
     fr = data.get("route_from", "")
     await message.answer(
@@ -909,7 +920,14 @@ async def reg_route_to(message: Message, state: FSMContext) -> None:
 
 @router.callback_query(DriverRegister.return_route, F.data.in_({"return_yes", "return_no"}))
 async def reg_return_route(cb: CallbackQuery, state: FSMContext) -> None:
-    await state.update_data(include_return=cb.data == "return_yes")
+    include_return = cb.data == "return_yes"
+    await state.update_data(include_return=include_return)
+    data = await state.get_data()
+    route_to = (data.get("route_to") or "").strip()
+    if route_to:
+        ensure_user(cb.from_user, prefer_driver=True)
+        dprof = DriverProfile.get(user=User.get(telegram_id=cb.from_user.id))
+        reg_service.save_draft_return_choice(dprof, route_to, include_return)
     await state.set_state(DriverRegister.full_name)
     await cb.message.answer("ФИО:")
     await cb.answer()
@@ -931,21 +949,36 @@ async def reg_name(message: Message, state: FSMContext) -> None:
     await state.update_data(full_name=name)
     ensure_user(message.from_user, prefer_driver=True)
     u = User.get(telegram_id=message.from_user.id)
-    DriverProfile.update(full_name=name).where(DriverProfile.user == u).execute()
+    dprof = DriverProfile.get(user=u)
+    dprof.full_name = name
+    dprof.status = DriverStatus.PENDING.value
+    dprof.save()
     await state.set_state(DriverRegister.car_info)
     await message.answer("Автомобиль (марка, модель, гос. номер):")
 
 
 @router.message(DriverRegister.car_info, F.text, _NOT_MENU_TEXT)
 async def reg_car(message: Message, state: FSMContext) -> None:
-    await state.update_data(car_info=message.text.strip())
+    car_info = message.text.strip()
+    await state.update_data(car_info=car_info)
+    ensure_user(message.from_user, prefer_driver=True)
+    dprof = DriverProfile.get(user=User.get(telegram_id=message.from_user.id))
+    dprof.car_info = car_info
+    dprof.status = DriverStatus.PENDING.value
+    dprof.save()
     await state.set_state(DriverRegister.phone)
     await message.answer("Номер телефона:")
 
 
 @router.message(DriverRegister.phone, F.text, _NOT_MENU_TEXT)
 async def reg_phone(message: Message, state: FSMContext) -> None:
-    await state.update_data(phone=message.text.strip())
+    phone = message.text.strip()
+    await state.update_data(phone=phone)
+    ensure_user(message.from_user, prefer_driver=True)
+    dprof = DriverProfile.get(user=User.get(telegram_id=message.from_user.id))
+    dprof.phone = phone
+    dprof.status = DriverStatus.PENDING.value
+    dprof.save()
     await state.set_state(DriverRegister.max_seats)
     await message.answer(
         f"Всего мест в машине ({keyboards.SEATS_VEHICLE_MIN}–{keyboards.SEATS_VEHICLE_MAX}):"
@@ -961,7 +994,13 @@ async def reg_max_seats(message: Message, state: FSMContext) -> None:
             f"Введите число {keyboards.SEATS_VEHICLE_MIN}–{keyboards.SEATS_VEHICLE_MAX}."
         )
         return
-    await state.update_data(max_seats=int(message.text))
+    max_seats = int(message.text)
+    await state.update_data(max_seats=max_seats)
+    ensure_user(message.from_user, prefer_driver=True)
+    dprof = DriverProfile.get(user=User.get(telegram_id=message.from_user.id))
+    dprof.max_seats = max_seats
+    dprof.status = DriverStatus.PENDING.value
+    dprof.save()
     await state.set_state(DriverRegister.own_seats)
     await message.answer(
         f"Сколько мест обычно занимают ваши пассажиры "
@@ -985,6 +1024,11 @@ async def reg_own_seats(message: Message, state: FSMContext) -> None:
         await message.answer(f"Должно быть меньше {max_seats} (всего мест в машине).")
         return
     await state.update_data(own_seats=own)
+    ensure_user(message.from_user, prefer_driver=True)
+    dprof = DriverProfile.get(user=User.get(telegram_id=message.from_user.id))
+    dprof.own_seats_reserved = own
+    dprof.status = DriverStatus.PENDING.value
+    dprof.save()
     await state.set_state(DriverRegister.price_per_seat)
     await message.answer("Тариф: цена за место (₽, число):")
 
@@ -997,88 +1041,56 @@ async def reg_price(message: Message, state: FSMContext) -> None:
         await message.answer("Введите число.")
         return
     await state.update_data(price_per_seat=str(price))
+    ensure_user(message.from_user, prefer_driver=True)
+    dprof = DriverProfile.get(user=User.get(telegram_id=message.from_user.id))
+    dprof.proposed_price_per_seat = price
+    dprof.status = DriverStatus.PENDING.value
+    dprof.save()
     await state.set_state(DriverRegister.fixed_price)
     await message.answer("Фиксированная доплата за рейс (₽, 0 если нет):")
 
 
 @router.message(DriverRegister.fixed_price, F.text, _NOT_MENU_TEXT)
 async def reg_fixed(message: Message, state: FSMContext, bot: Bot) -> None:
-    import logging
-    logger = logging.getLogger("taxi_bot.driver")
     try:
         fixed = Decimal(message.text.replace(",", ".").strip())
     except Exception:
         await message.answer("Введите число.")
         return
     data = await state.get_data()
+    data["fixed_price"] = str(fixed)
     ensure_user(message.from_user, prefer_driver=True)
-    u = User.get(telegram_id=message.from_user.id)
-    dprof = DriverProfile.get(user=u)
-    full_name = (data.get("full_name") or dprof.full_name or "").strip()
-    if not full_name:
-        await state.set_state(DriverRegister.full_name)
-        await message.answer("ФИО не указано. Введите ФИО:")
-        return
-    max_seats = int(data.get("max_seats", keyboards.SEATS_VEHICLE_MAX))
-    own_seats = int(data.get("own_seats", 0))
-    if own_seats >= max_seats:
-        await state.set_state(DriverRegister.own_seats)
-        await message.answer(
-            f"Своих мест должно быть меньше {max_seats}. "
-            f"Введите число {keyboards.SEATS_OWN_MIN}–{max_seats - 1}:"
-        )
-        return
-    price = Decimal(data.get("price_per_seat", "0"))
-    dprof.full_name = full_name
-    dprof.car_info = (data.get("car_info") or "").strip()
-    dprof.phone = (data.get("phone") or "").strip()
-    dprof.max_seats = max_seats
-    dprof.own_seats_reserved = own_seats
-    dprof.proposed_price_per_seat = price
+    dprof = DriverProfile.get(user=User.get(telegram_id=message.from_user.id))
     dprof.proposed_fixed_price = fixed
     dprof.status = DriverStatus.PENDING.value
     dprof.save()
-    await state.clear()
-    from app.services import direction_pairs
 
-    include_return = data.get("include_return", True)
-    proposals = direction_pairs.create_paired_proposals(
-        dprof,
-        data["route_from"],
-        data["route_to"],
-        max_seats=max_seats,
-        own_seats=own_seats,
-        price_per_seat=price,
-        fixed_price=fixed,
-        comment=f"Анкета: {data.get('car_info', '')}",
-        include_return=include_return,
+    ok, result = await reg_service.finalize_driver_registration(
+        bot,
+        dprof=dprof,
+        telegram_id=message.from_user.id,
+        data=data,
     )
-    route_txt = f"{data['route_from']} → {data['route_to']}"
-    if include_return and len(proposals) > 1:
-        route_txt += f"\n↩ {data['route_to']} → {data['route_from']}"
-    summary = (
-        "✅ Анкета отправлена!\n\n"
-        f"Маршрут(ы): {route_txt}\n"
-        f"ФИО: {full_name}\n"
-        f"Авто: {data.get('car_info')}\n"
-        f"Тел: {data.get('phone')}\n"
-        f"Мест: {max_seats} (своих: {own_seats})\n"
-        f"Тариф: {price} ₽/место + {fixed} ₽ фикс\n\n"
-        "Ожидайте подтверждения. «📞 Связь с админом» — в любой момент."
-    )
-    await message.answer(summary, reply_markup=keyboards.main_driver_kb())
-    try:
-        await notify_driver_registered(
-            bot,
-            full_name,
-            message.from_user.id,
-            route=f"{data['route_from']} → {data['route_to']}",
-            max_seats=max_seats,
-            tariff=f"{price}/{fixed}",
-        )
-        await notify_proposal(
-            bot, data["route_from"], data["route_to"], full_name,
-            paired=include_return,
-        )
-    except Exception as e:
-        logger.warning("Notify failed: %s", e)
+    if not ok:
+        if result == "route_lost":
+            await state.set_state(DriverRegister.route_from)
+            await message.answer(
+                "Данные маршрута не сохранились. Укажите снова — откуда (город):",
+                reply_markup=keyboards.cancel_kb(),
+            )
+            return
+        if result.startswith("own_seats:"):
+            max_seats = int(result.split(":")[1])
+            await state.set_state(DriverRegister.own_seats)
+            await message.answer(
+                f"Своих мест должно быть меньше {max_seats}. "
+                f"Введите число {keyboards.SEATS_OWN_MIN}–{max_seats - 1}:"
+            )
+            return
+        if result == "ФИО не указано. Введите ФИО:":
+            await state.set_state(DriverRegister.full_name)
+        await message.answer(result)
+        return
+
+    await state.clear()
+    await message.answer(result, reply_markup=keyboards.main_driver_kb())

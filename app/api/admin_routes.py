@@ -470,10 +470,13 @@ class DriverOut(BaseModel):
     online: bool
     loading: bool = False
     rest_until: Optional[str] = None
+    draft_route: Optional[str] = None
 
 
 @router.get("/drivers", response_model=List[DriverOut])
 def list_drivers() -> Any:
+    from app.services import driver_registration
+
     out: List[DriverOut] = []
     for d in DriverProfile.select():
         u = User.get_by_id(d.user_id)
@@ -492,6 +495,7 @@ def list_drivers() -> Any:
                 online=d.online,
                 loading=getattr(d, "loading", False),
                 rest_until=str(d.rest_until) if getattr(d, "rest_until", None) else None,
+                draft_route=driver_registration.draft_route_label(d),
             )
         )
     return out

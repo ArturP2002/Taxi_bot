@@ -22,6 +22,12 @@ def _admin_keyboard() -> InlineKeyboardMarkup:
 
 async def notify_admins(bot: Bot, text: str, extra_kb: Optional[InlineKeyboardMarkup] = None) -> None:
     settings = get_settings()
+    if not settings.admin_ids:
+        logger.error(
+            "ADMIN_TELEGRAM_IDS is empty — уведомления админам отключены. "
+            "Задайте ID в .env через запятую."
+        )
+        return
     kb = extra_kb or _admin_keyboard()
     for admin_id in settings.admin_ids:
         try:
@@ -77,22 +83,31 @@ async def notify_driver_registered(
     driver_name: str,
     telegram_id: int,
     *,
+    driver_id: int | None = None,
     route: str | None = None,
     max_seats: int | None = None,
     tariff: str | None = None,
+    car_info: str | None = None,
+    phone: str | None = None,
 ) -> None:
     text = (
-        f"👤 Новая заявка от водителя\n"
+        f"👤 Новая анкета водителя\n"
         f"Имя: {driver_name}\n"
         f"TG ID: {telegram_id}\n"
     )
+    if driver_id is not None:
+        text += f"ID в системе: {driver_id}\n"
     if route:
         text += f"Маршрут: {route}\n"
+    if car_info:
+        text += f"Авто: {car_info}\n"
+    if phone:
+        text += f"Тел: {phone}\n"
     if max_seats is not None:
         text += f"Мест: {max_seats}\n"
     if tariff:
         text += f"Тариф: {tariff}\n"
-    text += "\nПодтвердите в админке."
+    text += "\nОткройте админку → вкладка «Водители» → «Подтвердить»."
     await notify_admins(bot, text)
 
 
