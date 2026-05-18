@@ -37,5 +37,10 @@ def validate_init_data(init_data: str, *, max_age_seconds: Optional[int] = 86400
         except (ValueError, TypeError):
             return None
     user_raw = parsed.get("user")
-    user = json.loads(user_raw) if user_raw else None
+    user = None
+    if user_raw:
+        try:
+            user = json.loads(user_raw)
+        except json.JSONDecodeError:
+            return None
     return {"user": user, "raw": parsed}

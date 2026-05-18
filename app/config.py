@@ -1,7 +1,10 @@
+import logging
 from functools import lru_cache
 from typing import FrozenSet
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+logger = logging.getLogger("taxi_bot.config")
 
 
 class Settings(BaseSettings):
@@ -43,7 +46,13 @@ class Settings(BaseSettings):
         if not self.admin_telegram_ids.strip():
             return frozenset()
         parts = [p.strip() for p in self.admin_telegram_ids.split(",") if p.strip()]
-        return frozenset(int(x) for x in parts)
+        ids: list[int] = []
+        for part in parts:
+            try:
+                ids.append(int(part))
+            except ValueError:
+                logger.warning("Invalid ADMIN_TELEGRAM_IDS entry ignored: %r", part)
+        return frozenset(ids)
 
 
 @lru_cache

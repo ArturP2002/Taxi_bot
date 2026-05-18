@@ -103,8 +103,29 @@ try { tg.setBackgroundColor('#0d1117'); } catch(e){}
 
 var content = document.getElementById('content');
 var statusEl = document.getElementById('auth-status');
-var token = localStorage.getItem('admin_jwt') || '';
+var token = '';
 var cache = { orders: [], drivers: [], directions: [] };
+
+var AUTH_ERRORS = {
+  bad_init_data: 'Сессия Telegram устарела. Закройте админку и откройте снова.',
+  not_admin: 'Нет доступа. Добавьте ваш Telegram ID в ADMIN_TELEGRAM_IDS.',
+  admin_not_configured: 'На сервере не задан ADMIN_TELEGRAM_IDS.',
+  unknown_user: 'Сессия устарела. Обновите страницу.',
+  invalid_token: 'Сессия устарела. Обновите страницу.',
+  auth_failed: 'Ошибка входа. Проверьте BOT_TOKEN и логи сервера.',
+  internal_server_error: 'Ошибка сервера. Перезапустите API и попробуйте снова.'
+};
+
+function authErrorLabel(detail) {
+  if (!detail) return 'Ошибка авторизации';
+  var key = String(detail);
+  return AUTH_ERRORS[key] || key;
+}
+
+function clearAuthToken() {
+  token = '';
+  localStorage.removeItem('admin_jwt');
+}
 
 function api(path, opts) {
   opts = opts || {};
@@ -126,7 +147,13 @@ function api(path, opts) {
     return r.text().then(function(text) {
       var data;
       try { data = JSON.parse(text); } catch(e) { data = text; }
-      if (!r.ok) throw new Error(typeof data === 'object' ? (data.detail || JSON.stringify(data)) : String(data));
+      if (!r.ok) {
+        var detail = typeof data === 'object' ? data.detail : null;
+        if (r.status === 401 && (detail === 'unknown_user' || detail === 'invalid_token')) {
+          clearAuthToken();
+        }
+        throw new Error(authErrorLabel(detail || (r.status === 500 ? 'internal_server_error' : String(data))));
+      }
       return data;
     });
   });
@@ -135,14 +162,18 @@ function api(path, opts) {
 function ensureArray(v) { return Array.isArray(v) ? v : []; }
 
 function auth() {
+  clearAuthToken();
   var initData = tg.initData || '';
   if (!initData) {
-    statusEl.textContent = 'Откройте через Telegram';
+    statusEl.textContent = 'Откройте через Telegram (кнопка «Админка» в боте)';
     statusEl.className = 'err';
     return Promise.resolve(false);
   }
   return api('/api/auth/telegram', { method: 'POST', body: JSON.stringify({ init_data: initData }) })
     .then(function(res) {
+      if (!res || !res.access_token) {
+        throw new Error('auth_failed');
+      }
       token = res.access_token;
       localStorage.setItem('admin_jwt', token);
       statusEl.textContent = 'Авторизовано';
@@ -150,7 +181,8 @@ function auth() {
       return true;
     })
     .catch(function(e) {
-      statusEl.textContent = 'Ошибка: ' + e.message;
+      clearAuthToken();
+      statusEl.textContent = authErrorLabel(e.message);
       statusEl.className = 'err';
       return false;
     });
@@ -977,8 +1009,10 @@ function sendBackup() {
 
 // Init
 auth().then(function(ok) {
-  if (ok !== false) {
+  if (ok === true) {
     renderTab('dashboard');
+  } else {
+    content.innerHTML = '<div class="empty">Не удалось войти. Закройте Mini App и откройте снова из бота (/admin).</div>';
   }
 });
 </script>

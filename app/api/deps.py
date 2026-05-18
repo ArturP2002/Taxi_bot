@@ -5,7 +5,7 @@ from fastapi import Depends, HTTPException
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 from app.config import get_settings
-from app.models import User
+from app.models import User, UserRole
 
 security = HTTPBearer(auto_error=False)
 
@@ -27,6 +27,13 @@ async def get_current_user(
     try:
         return User.get(telegram_id=tid)
     except User.DoesNotExist:
+        settings = get_settings()
+        if tid in settings.admin_ids:
+            user, _ = User.get_or_create(
+                telegram_id=tid,
+                defaults={"role": UserRole.ADMIN.value},
+            )
+            return user
         raise HTTPException(status_code=401, detail="unknown_user")
 
 
