@@ -35,6 +35,7 @@ class DriverProfile(BaseModel):
     pending_return_direction = ForeignKeyField(
         Direction, null=True, backref="drivers_pending_return", on_delete="SET NULL"
     )
+    rest_until = DateTimeField(null=True)
     created_at = DateTimeField(default=utcnow)
     updated_at = DateTimeField(null=True)
 

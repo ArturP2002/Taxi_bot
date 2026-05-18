@@ -6,6 +6,7 @@ from aiogram.types import Message, CallbackQuery, WebAppInfo, InlineKeyboardMark
 
 from app.config import get_settings
 from app.bot import keyboards
+from app.bot.messages import PASSENGER_RULES, DRIVER_RULES
 from app.bot.users import ensure_user, is_admin
 from app.services import admin_relay
 
@@ -40,14 +41,14 @@ async def cmd_admin(message: Message) -> None:
 @router.message(Command("passenger"))
 async def to_passenger(message: Message) -> None:
     ensure_user(message.from_user)
-    await message.answer("Режим пассажира", reply_markup=keyboards.main_passenger_kb())
+    await message.answer(PASSENGER_RULES, reply_markup=keyboards.main_passenger_kb())
 
 
 @router.message(F.text == "🧑‍✈️ Я водитель")
 @router.message(Command("driver"))
 async def im_driver(message: Message) -> None:
     ensure_user(message.from_user, prefer_driver=True)
-    await message.answer("Меню водителя", reply_markup=keyboards.main_driver_kb())
+    await message.answer(DRIVER_RULES, reply_markup=keyboards.main_driver_kb())
 
 
 @router.callback_query(F.data.startswith("adm_ok:"))

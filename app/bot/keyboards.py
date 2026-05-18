@@ -28,6 +28,7 @@ def main_driver_kb() -> ReplyKeyboardMarkup:
     b.button(text="💸 Оплатить долг")
     b.button(text="🔍 Проверить платёж")
     b.button(text="➕ Предложить маршрут")
+    b.button(text="😴 Отдых")
     b.button(text="📞 Связь с админом")
     b.button(text="👤 Режим пассажира")
     b.adjust(2)
@@ -119,6 +120,14 @@ def admin_suggestion_inline(assignment_id: int) -> InlineKeyboardMarkup:
     ib.button(text="❌ Другой водитель", callback_data=f"adm_no:{assignment_id}")
     ib.adjust(1)
     return ib.as_markup()
+
+
+def before_trip_kb() -> ReplyKeyboardMarkup:
+    b = ReplyKeyboardBuilder()
+    b.button(text="▶️ Старт поездки")
+    b.button(text="💬 Связь с пассажиром")
+    b.adjust(1)
+    return b.as_markup(resize_keyboard=True)
 
 
 def trip_actions_kb() -> ReplyKeyboardMarkup:

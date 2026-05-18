@@ -24,6 +24,12 @@ MIGRATIONS: list[tuple[str, list[str]]] = [
             "ALTER TABLE payment_records ADD COLUMN payer_type VARCHAR(32) DEFAULT 'driver'",
         ],
     ),
+    (
+        "20260517_v2",
+        [
+            "ALTER TABLE driver_profiles ADD COLUMN rest_until TEXT",
+        ],
+    ),
 ]
 
 

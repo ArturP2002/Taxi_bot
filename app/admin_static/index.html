@@ -89,6 +89,7 @@
     <button class="tab-btn" data-tab="queue">Очередь</button>
     <button class="tab-btn" data-tab="proposals">Заявки</button>
     <button class="tab-btn" data-tab="payments">Оплаты</button>
+    <button class="tab-btn" data-tab="audit">Журнал</button>
   </div>
   <div class="content" id="content"></div>
   <div class="modal-overlay" id="modal-overlay"><div class="modal" id="modal"></div></div>
@@ -200,14 +201,29 @@ function renderTab(tab) {
     directions: renderDirections,
     queue: renderQueue,
     proposals: renderProposals,
-    payments: renderPayments
+    payments: renderPayments,
+    audit: renderAudit
   };
   (fn[tab] || renderDashboard)();
 }
 
 function statusLabel(s) {
-  var m = { new:'Новый', assigned:'Назначен', in_progress:'В пути', completed:'Завершён', admin_review:'На проверке', pending:'Ожидает', confirmed:'Подтверждён', awaiting_admin:'Ждёт админа', active:'Активен', blocked:'Заблокирован', failed:'Ошибка', suggested:'Предложен' };
+  var m = { new:'Новый', assigned:'Назначен', in_progress:'В пути', completed:'Завершён', admin_review:'На проверке', awaiting_payment:'Ждёт оплату', cancelled:'Отменён', pending:'Ожидает', confirmed:'Подтверждён', awaiting_admin:'Ждёт админа', active:'Активен', blocked:'Заблокирован', failed:'Ошибка', suggested:'Предложен' };
   return m[s] || s;
+}
+function fmtHours(min) {
+  if (!min) return '0 ч';
+  var h = min / 60;
+  return (min % 60 === 0) ? (h + ' ч') : (h.toFixed(1) + ' ч');
+}
+function hoursToMin(h) { return Math.max(30, Math.round(parseFloat(h || '1') * 60)); }
+function queueDriverStatus(q) {
+  var parts = [];
+  if (q.loading) parts.push('🟡 загрузка');
+  if (q.in_trip) parts.push('🚗 в пути');
+  if (q.rest_until) parts.push('😴 отдых');
+  if (!q.online) parts.push('🔴 офлайн');
+  return parts.length ? parts.join(', ') : '🟢 свободен';
 }
 
 function h(tag, cls, inner) { return '<' + tag + (cls ? ' class="' + cls + '"' : '') + '>' + (inner || '') + '</' + tag + '>'; }
@@ -227,11 +243,16 @@ function renderDashboard() {
       cache.orders = orders; cache.drivers = drivers; cache.directions = directions;
 
       var newO = orders.filter(function(o){return o.status==='new'}).length;
+      var needDrv = orders.filter(function(o){return o.suggestion}).length;
+      var pendingDrv = drivers.filter(function(d){return d.status==='pending'}).length;
       var activeO = orders.filter(function(o){return o.status==='in_progress'}).length;
       var online = drivers.filter(function(d){return d.online}).length;
       var debt = drivers.reduce(function(s,d){return s + parseFloat(d.balance||0)}, 0);
 
-      var html = '<div class="stats-grid">';
+      var html = '<div class="actions" style="margin-bottom:12px"><button class="btn btn-outline" onclick="downloadBackup()">💾 Бэкап БД</button></div>';
+      html += '<div class="stats-grid">';
+      html += stat(needDrv, 'Ждут водителя');
+      html += stat(pendingDrv, 'Новые водители');
       html += stat(newO, 'Новые заказы');
       html += stat(activeO, 'В пути');
       html += stat(online, 'Онлайн');
@@ -273,7 +294,7 @@ function renderOrders() {
       html += row('Мест', o.seats);
       html += row('Телефон', o.phone);
       html += row('Подача', (o.pickup_location || '—') + ' ' + (o.pickup_time_text || ''));
-      if ((o.status === 'new' || o.status === 'admin_review') && o.suggestion) {
+      if (o.suggestion) {
         var sg = o.suggestion;
         html += '<div style="margin:10px 0;padding:10px;background:rgba(245,197,24,.08);border:1px solid var(--gold-dim);border-radius:8px">';
         html += '<div style="font-size:12px;color:var(--gold);font-weight:600;margin-bottom:6px">🚗 Предложение системы</div>';
@@ -291,7 +312,8 @@ function renderOrders() {
         html += '<div class="actions"><button class="btn btn-success" onclick="confirmPassengerPay(' + o.id + ')">Подтвердить оплату</button></div>';
       }
       if (o.status !== 'completed' && o.status !== 'cancelled') {
-        html += '<div class="actions"><button class="btn btn-danger" onclick="cancelOrder(' + o.id + ')">Отменить заказ</button></div>';
+        html += '<div class="actions"><button class="btn btn-outline" onclick="showEditOrder(' + o.id + ')">✏️ Изменить</button>';
+        html += '<button class="btn btn-danger" onclick="cancelOrder(' + o.id + ')">Отменить заказ</button></div>';
       }
       html += cardEnd();
     }
@@ -304,6 +326,33 @@ function cancelOrder(orderId) {
   if (!confirm('Отменить заказ #' + orderId + '?')) return;
   api('/api/admin/orders/' + orderId + '/cancel', { method: 'POST' })
     .then(function() { toast('Заказ отменён'); renderOrders(); })
+    .catch(function(e) { toast('Ошибка: ' + e.message); });
+}
+
+function showEditOrder(orderId) {
+  var o = (cache.orders || []).find(function(x) { return x.id === orderId; });
+  if (!o) { toast('Заказ не найден'); return; }
+  var esc = function(s) { return String(s || '').replace(/"/g, '&quot;'); };
+  var html = '<h3>Заказ #' + orderId + '</h3>';
+  html += '<div class="form-group"><label>Мест</label><input id="eo-seats" type="number" value="' + o.seats + '"/></div>';
+  html += '<div class="form-group"><label>Откуда (подача)</label><input id="eo-from" value="' + esc(o.from_location) + '"/></div>';
+  html += '<div class="form-group"><label>Куда</label><input id="eo-to" value="' + esc(o.to_location) + '"/></div>';
+  html += '<div class="form-group"><label>Время подачи</label><input id="eo-time" value="' + esc(o.pickup_time_text) + '"/></div>';
+  html += '<div class="actions"><button class="btn btn-gold" onclick="doEditOrder(' + orderId + ')">Сохранить</button>';
+  html += '<button class="btn btn-outline" onclick="closeModal()">Отмена</button></div>';
+  openModal(html);
+}
+
+function doEditOrder(orderId) {
+  api('/api/admin/orders/' + orderId, {
+    method: 'PATCH',
+    body: JSON.stringify({
+      seats: parseInt(document.getElementById('eo-seats').value) || 1,
+      from_location: document.getElementById('eo-from').value.trim(),
+      to_location: document.getElementById('eo-to').value.trim(),
+      pickup_time_text: document.getElementById('eo-time').value.trim() || null
+    })
+  }).then(function() { closeModal(); toast('Заказ обновлён'); renderOrders(); })
     .catch(function(e) { toast('Ошибка: ' + e.message); });
 }
 
@@ -420,7 +469,17 @@ function renderDrivers() {
       var directions = ensureArray(results[1]);
       cache.drivers = drivers; cache.directions = directions;
       if (drivers.length === 0) { content.innerHTML = '<div class="empty">Нет водителей</div>'; return; }
+      var pendingList = drivers.filter(function(d){ return d.status === 'pending'; });
       var html = '';
+      if (pendingList.length > 0) {
+        html += cardStart('⏳ Подтвердить водителей (' + pendingList.length + ')', 'pending');
+        for (var pi = 0; pi < pendingList.length; pi++) {
+          var pd = pendingList[pi];
+          html += row(pd.full_name || 'ID:' + pd.id, 'TG ' + pd.telegram_id);
+          html += '<div class="actions"><button class="btn btn-success" onclick="showApproveDriver(' + pd.id + ')">✅ Подтвердить</button></div>';
+        }
+        html += cardEnd();
+      }
       for (var i = 0; i < drivers.length; i++) {
         var d = drivers[i];
         var dir = null;
@@ -431,11 +490,15 @@ function renderDrivers() {
         html += row('Направление', dirName);
         html += row('Макс. мест', d.max_seats);
         html += row('Долг', d.balance + ' ₽');
+        html += row('Свои места', d.own_seats_reserved);
         html += row('Онлайн', d.online ? '🟢 Да' : '🔴 Нет');
+        html += row('Загрузка', d.loading ? 'да' : 'нет');
+        if (d.rest_until) html += row('Отдых до', d.rest_until);
         html += '<div class="actions">';
         if (d.status === 'pending') html += '<button class="btn btn-success" onclick="showApproveDriver(' + d.id + ')">Подтвердить</button>';
         if (d.status === 'active') {
           html += '<button class="btn btn-gold" onclick="showChangeDirection(' + d.id + ',' + (d.direction_id || 'null') + ')">Направление</button>';
+          html += '<button class="btn btn-outline" onclick="showEditDriver(' + d.id + ')">✏️ Параметры</button>';
           html += '<button class="btn btn-danger" onclick="blockDriver(' + d.id + ')">Блокировать</button>';
         }
         if (d.status === 'blocked') html += '<button class="btn btn-success" onclick="showApproveDriver(' + d.id + ')">Разблокировать</button>';
@@ -444,6 +507,30 @@ function renderDrivers() {
       }
       content.innerHTML = html;
     }).catch(function(e) { content.innerHTML = '<div class="empty">Ошибка: ' + e.message + '</div>'; });
+}
+
+
+function showEditDriver(driverId) {
+  var d = (cache.drivers || []).find(function(x) { return x.id === driverId; });
+  if (!d) { toast('Водитель не найден'); return; }
+  var html = '<h3>Водитель #' + driverId + '</h3>';
+  html += '<div class="form-group"><label>Макс. мест</label><input id="ed-max" type="number" value="' + d.max_seats + '"/></div>';
+  html += '<div class="form-group"><label>Свои места</label><input id="ed-own" type="number" value="' + d.own_seats_reserved + '"/></div>';
+  html += '<div class="form-group"><label>Отдых (часов от сейчас, 0 — снять)</label><input id="ed-rest" type="number" value="0"/></div>';
+  html += '<div class="actions"><button class="btn btn-gold" onclick="doEditDriver(' + driverId + ')">Сохранить</button>';
+  html += '<button class="btn btn-outline" onclick="closeModal()">Отмена</button></div>';
+  openModal(html);
+}
+function doEditDriver(driverId) {
+  var restH = parseInt(document.getElementById('ed-rest').value) || 0;
+  var body = {
+    max_seats: parseInt(document.getElementById('ed-max').value) || 6,
+    own_seats_reserved: parseInt(document.getElementById('ed-own').value) || 0
+  };
+  if (restH > 0) body.rest_hours = restH; else body.clear_rest = true;
+  api('/api/admin/drivers/' + driverId, { method: 'PATCH', body: JSON.stringify(body) })
+    .then(function() { closeModal(); toast('Сохранено'); renderDrivers(); })
+    .catch(function(e) { toast('Ошибка: ' + e.message); });
 }
 
 function showApproveDriver(driverId) {
@@ -515,34 +602,31 @@ function doChangeDirection(driverId) {
 
 // Directions
 function renderDirections() {
-  api('/api/admin/directions').then(function(data) {
-    var directions = ensureArray(data);
+  Promise.all([api('/api/admin/directions'), api('/api/admin/directions/grouped')]).then(function(res) {
+    var directions = ensureArray(res[0]);
+    var groups = ensureArray(res[1]);
     cache.directions = directions;
-    var html = '<p style="font-size:12px;color:var(--text-dim);margin-bottom:10px">' + 'Нажмите <b style="color:var(--gold)">✏️ Редактировать</b>' + ' на карточке маршрута (вкладка «Маршруты»).</p>';
-    html += '<div class="actions" style="margin-bottom:12px"><button class="btn btn-gold" onclick="showCreateDirection()">+ Новый маршрут</button></div>';
-    if (directions.length === 0) {
-      html += '<div class="empty">Нет маршрутов</div>';
-    }
-    for (var i = 0; i < directions.length; i++) {
-      var d = directions[i];
-      html += cardStart(d.from_label + ' → ' + d.to_label, d.enabled ? 'active' : 'blocked');
-      html += row('Время (мин)', d.estimated_time_min);
-      html += row('Мин. время', d.min_time_percent + '%');
-      html += row('Цена/место', d.price_per_seat + ' ₽');
-      html += row('Фикс. цена', d.fixed_price + ' ₽');
-      html += row('Вместимость', d.vehicle_capacity_default);
-      if (d.reverse_direction_id) {
-        var revD = directions.find(function(x) { return x.id === d.reverse_direction_id; });
-        if (revD) html += row('↩ Обратно', revD.from_label + ' → ' + revD.to_label);
-      } else html += row('Обратный ID', '—');
-      html += '<div class="actions">';
-      html += '<button class="btn btn-gold" onclick="showEditDirection(' + d.id + ')">✏️ Редактировать</button>';
-      if (d.enabled) {
-        html += '<button class="btn btn-danger" onclick="toggleDirection(' + d.id + ',false)">Выключить</button>';
-      } else {
-        html += '<button class="btn btn-success" onclick="toggleDirection(' + d.id + ',true)">Включить</button>';
+    var html = '<div class="actions" style="margin-bottom:12px"><button class="btn btn-gold" onclick="showCreateDirection()">+ Новый маршрут</button></div>';
+    if (!groups.length) { html += '<div class="empty">Нет маршрутов</div>'; content.innerHTML = html; return; }
+    for (var gi = 0; gi < groups.length; gi++) {
+      var g = groups[gi];
+      html += cardStart('🛣 ' + (g.label || ''), 'active');
+      var legs = [g.forward];
+      if (g.reverse) legs.push(g.reverse);
+      for (var li = 0; li < legs.length; li++) {
+        var leg = legs[li];
+        var d = directions.find(function(x) { return x.id === leg.id; });
+        if (!d) d = leg;
+        html += '<div style="margin:8px 0;padding:8px;border-left:2px solid var(--gold-dim)">';
+        html += row(li === 0 ? 'Туда' : '↩ Обратно', d.from_label + ' → ' + d.to_label);
+        html += row('Время', fmtHours(d.estimated_time_min));
+        html += row('Тариф', d.price_per_seat + ' + ' + d.fixed_price + ' ₽');
+        html += '<div class="actions">';
+        html += '<button class="btn btn-gold" onclick="showEditDirection(' + d.id + ')">✏️</button>';
+        if (d.enabled !== false) html += '<button class="btn btn-danger" onclick="toggleDirection(' + d.id + ',false)">Выкл</button>';
+        else html += '<button class="btn btn-success" onclick="toggleDirection(' + d.id + ',true)">Вкл</button>';
+        html += '</div></div>';
       }
-      html += '</div>';
       html += cardEnd();
     }
     content.innerHTML = html;
@@ -552,12 +636,11 @@ function renderDirections() {
 }
 
 function showCreateDirection() {
-  var etaChips = [30, 45, 60, 90, 120];
+  var etaChips = [1, 2, 3, 4, 5, 6];
   var etaHtml = '';
   for (var i = 0; i < etaChips.length; i++) {
     var v = etaChips[i];
-    var label = v >= 60 ? (v/60) + 'ч' : v + 'м';
-    etaHtml += '<button class="chip' + (v === 60 ? ' chip-active' : '') + '" onclick="document.getElementById(\'m-eta\').value=' + v + ';_highlightChip(this)">' + label + '</button>';
+    etaHtml += '<button class="chip' + (v === 3 ? ' chip-active' : '') + '" onclick="document.getElementById(\'m-eta-h\').value=' + v + ';_highlightChip(this)">' + v + 'ч</button>';
   }
   var capChips = '';
   for (var c = 1; c <= 8; c++) {
@@ -566,7 +649,7 @@ function showCreateDirection() {
   var html = '<h3>Новый маршрут</h3>';
   html += '<div class="form-group"><label>Откуда</label><input id="m-from"/></div>';
   html += '<div class="form-group"><label>Куда</label><input id="m-to"/></div>';
-  html += '<div class="form-group"><label>Время в пути (мин)</label><input id="m-eta" type="number" value="60"/>';
+  html += '<div class="form-group"><label>Время в пути (часы)</label><input id="m-eta-h" type="number" step="0.5" value="3"/>';
   html += '<div class="chips">' + etaHtml + '</div></div>';
   html += '<div class="form-group"><label>Цена за место (₽)</label><input id="m-price" type="number" value="0"/></div>';
   html += '<div class="form-group"><label>Фикс. цена (₽)</label><input id="m-fixed" type="number" value="0"/></div>';
@@ -584,7 +667,7 @@ function showEditDirection(dirId) {
   var html = '<h3>✏️ Редактировать маршрут #' + dirId + '</h3>';
   html += '<div class="form-group"><label>Откуда</label><input id="e-from" value="' + esc(d.from_label) + '"/></div>';
   html += '<div class="form-group"><label>Куда</label><input id="e-to" value="' + esc(d.to_label) + '"/></div>';
-  html += '<div class="form-group"><label>Время в пути (мин)</label><input id="e-eta" type="number" value="' + d.estimated_time_min + '"/></div>';
+  html += '<div class="form-group"><label>Время в пути (часы)</label><input id="e-eta-h" type="number" step="0.5" value="' + (d.estimated_time_min/60) + '"/></div>';
   html += '<div class="form-group"><label>Мин. время (%)</label><input id="e-minpct" type="number" value="' + d.min_time_percent + '"/></div>';
   html += '<div class="form-group"><label>Цена за место (₽)</label><input id="e-price" type="number" value="' + d.price_per_seat + '"/></div>';
   html += '<div class="form-group"><label>Фикс. цена (₽)</label><input id="e-fixed" type="number" value="' + d.fixed_price + '"/></div>';
@@ -600,7 +683,7 @@ function doEditDirection(dirId) {
     body: JSON.stringify({
       from_label: document.getElementById('e-from').value.trim(),
       to_label: document.getElementById('e-to').value.trim(),
-      estimated_time_min: parseInt(document.getElementById('e-eta').value) || 60,
+      estimated_time_min: hoursToMin(document.getElementById('e-eta-h').value),
       min_time_percent: parseInt(document.getElementById('e-minpct').value) || 70,
       price_per_seat: parseFloat(document.getElementById('e-price').value) || 0,
       fixed_price: parseFloat(document.getElementById('e-fixed').value) || 0,
@@ -628,7 +711,7 @@ function doCreateDirection() {
   var body = {
     from_label: fromVal,
     to_label: toVal,
-    estimated_time_min: parseInt(document.getElementById('m-eta').value) || 60,
+    estimated_time_min: hoursToMin(document.getElementById('m-eta-h').value),
     price_per_seat: parseFloat(document.getElementById('m-price').value) || 0,
     fixed_price: parseFloat(document.getElementById('m-fixed').value) || 0,
     vehicle_capacity_default: parseInt(document.getElementById('m-cap').value) || 6
@@ -644,30 +727,44 @@ function doCreateDirection() {
 
 // Queue
 function renderQueue() {
-  api('/api/admin/directions').then(function(data) {
-    var directions = ensureArray(data);
-    cache.directions = directions;
-    if (directions.length === 0) { content.innerHTML = '<div class="empty">Нет маршрутов</div>'; return; }
-    var promises = [];
-    for (var i = 0; i < directions.length; i++) {
-      promises.push(api('/api/admin/directions/' + directions[i].id + '/queue'));
-    }
-    return Promise.all(promises).then(function(queues) {
+  api('/api/admin/directions/grouped').then(function(groups) {
+    groups = ensureArray(groups);
+    if (!groups.length) { content.innerHTML = '<div class="empty">Нет маршрутов</div>'; return; }
+    var tasks = [];
+    groups.forEach(function(g) {
+      tasks.push({ g: g, leg: g.forward, label: 'Туда' });
+      if (g.reverse) tasks.push({ g: g, leg: g.reverse, label: '↩' });
+    });
+    return Promise.all(tasks.map(function(tk) {
+      return api('/api/admin/directions/' + tk.leg.id + '/queue').then(function(q) {
+        return { tk: tk, q: ensureArray(q) };
+      });
+    })).then(function(rows) {
       var html = '';
-      for (var i = 0; i < directions.length; i++) {
-        var d = directions[i];
-        var q = ensureArray(queues[i]);
-        html += cardStart(d.from_label + ' → ' + d.to_label);
-        html += '<div class="row"><span class="lbl">В очереди</span><span class="val">' + q.length + ' чел.</span></div>';
+      var lastG = null;
+      for (var i = 0; i < rows.length; i++) {
+        var r = rows[i];
+        if (!lastG || lastG !== r.tk.g) {
+          if (lastG) html += cardEnd();
+          html += cardStart('🛣 ' + (r.tk.g.label || ''));
+          lastG = r.tk.g;
+        }
+        html += '<div style="margin-top:8px;font-weight:600;color:var(--gold)">' + r.tk.label + ': ' + r.tk.leg.from_label + ' → ' + r.tk.leg.to_label + '</div>';
+        var q = r.q;
+        html += row('В очереди', q.length);
         for (var j = 0; j < q.length; j++) {
-          html += '<div class="row"><span class="lbl">' + (j+1) + '. #' + q[j].driver_id + '</span><span class="val">';
-          if (j > 0) html += '<button class="btn btn-outline" style="padding:4px 8px;margin-right:4px" onclick="moveQueue(' + d.id + ',' + j + ',-1)">↑</button>';
-          if (j < q.length - 1) html += '<button class="btn btn-outline" style="padding:4px 8px" onclick="moveQueue(' + d.id + ',' + j + ',1)">↓</button>';
+          var qq = q[j];
+          var name = qq.full_name || ('#' + qq.driver_id);
+          html += '<div class="row"><span class="lbl">' + (j+1) + '. ' + name + '</span><span class="val" style="font-size:11px">';
+          html += queueDriverStatus(qq) + ' · мест:' + qq.own_seats_reserved;
+          if (qq.loading_label) html += '<br/>⏱ ' + qq.loading_label;
+          if (qq.car_info) html += '<br/>' + qq.car_info;
+          if (j > 0) html += ' <button class="btn btn-outline" style="padding:4px 8px" onclick="moveQueue(' + r.tk.leg.id + ',' + j + ',-1)">↑</button>';
+          if (j < q.length - 1) html += ' <button class="btn btn-outline" style="padding:4px 8px" onclick="moveQueue(' + r.tk.leg.id + ',' + j + ',1)">↓</button>';
           html += '</span></div>';
         }
-        if (q.length === 0) html += '<div style="padding:6px 0;color:var(--text-dim);font-size:12px">Пусто</div>';
-        html += cardEnd();
       }
+      if (lastG) html += cardEnd();
       content.innerHTML = html;
     });
   }).catch(function(e) { content.innerHTML = '<div class="empty">Ошибка: ' + e.message + '</div>'; });
@@ -698,13 +795,15 @@ function renderProposals() {
       var plist = g.proposals || [];
       if (plist.length === 0) continue;
       var p0 = plist[0];
-      html += cardStart('🛣 ' + p0.from_label + ' ↔ ' + p0.to_label + ' (' + plist.length + ' водит.)', 'pending');
+      var title = g.label || (p0.from_label + ' ↔ ' + p0.to_label);
+      html += cardStart('🛣 ' + title + ' (' + plist.length + ' водит.)', 'pending');
       for (var i = 0; i < plist.length; i++) {
         var p = plist[i];
         html += row((i+1) + '. ' + (p.proposer_name || 'ID:'+p.proposer_id), p.from_label + ' → ' + p.to_label);
         html += row('Тариф', p.price_per_seat + ' + ' + p.fixed_price);
         html += '<div class="actions">';
-        html += '<button class="btn btn-success" onclick="approveProposal(' + p.id + ')">Одобрить</button>';
+        html += '<button class="btn btn-success" onclick="approveProposal(' + p.id + ')">✅ Одобрить</button>';
+        html += '<button class="btn btn-danger" onclick="rejectProposal(' + p.id + ')">Отклонить</button>';
         html += '</div>';
       }
       html += cardEnd();
@@ -721,7 +820,7 @@ function renderProposalsLegacy() {
     for (var i = 0; i < proposals.length; i++) {
       var p = proposals[i];
       html += cardStart(p.from_label + ' → ' + p.to_label, 'pending');
-      html += row('Время (мин)', p.estimated_time_min);
+      html += row('Время', fmtHours(p.estimated_time_min));
       html += row('Комментарий', p.comment || '—');
       html += row('Водитель', (p.proposer_name || '') + ' #' + p.proposer_id);
       html += row('Мест', p.max_seats + ' (своих: ' + p.own_seats + ')');
@@ -804,6 +903,47 @@ function doConfirmPayment(paymentId) {
   api('/api/admin/payments/' + paymentId + '/confirm', { method: 'POST', body: JSON.stringify({ amount: +amount }) })
     .then(function() { closeModal(); toast('Платёж подтверждён'); renderPayments(); })
     .catch(function(e) { toast('Ошибка: ' + e.message); });
+}
+
+
+
+function renderAudit() {
+  api('/api/admin/audit?limit=80').then(function(rows) {
+    rows = ensureArray(rows);
+    if (!rows.length) { content.innerHTML = '<div class="empty">Пусто</div>'; return; }
+    var html = '';
+    for (var i = 0; i < rows.length; i++) {
+      var a = rows[i];
+      html += cardStart(a.action, '');
+      html += row('Когда', (a.created_at || '').slice(0, 19));
+      html += row('Сущность', (a.entity_type || '') + ' #' + (a.entity_id || ''));
+      if (a.actor_telegram_id) html += row('Актор TG', a.actor_telegram_id);
+      if (a.payload) html += row('Детали', a.payload);
+      html += cardEnd();
+    }
+    content.innerHTML = html;
+  }).catch(function(e) { content.innerHTML = '<div class="empty">Ошибка: ' + e.message + '</div>'; });
+}
+
+function downloadBackup() {
+  var headers = { 'Authorization': 'Bearer ' + token, 'ngrok-skip-browser-warning': 'true' };
+  fetch('/api/admin/backup', { method: 'POST', headers: headers, cache: 'no-store' })
+    .then(function(r) {
+      if (!r.ok) return r.text().then(function(t) { throw new Error(t); });
+      return r.blob();
+    })
+    .then(function(blob) {
+      var url = URL.createObjectURL(blob);
+      var a = document.createElement('a');
+      a.href = url;
+      a.download = 'taxi_backup_' + Date.now() + '.db';
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+      toast('Бэкап скачан');
+    })
+    .catch(function(e) { toast('Ошибка бэкапа: ' + e.message); });
 }
 
 // Init

@@ -1,3 +1,4 @@
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from typing import Any, List, Optional
 
@@ -194,6 +195,8 @@ class OrderPatchIn(BaseModel):
     to_location: Optional[str] = None
     seats: Optional[int] = None
     status: Optional[str] = None
+    pickup_location: Optional[str] = None
+    pickup_time_text: Optional[str] = None
 
 
 @router.patch("/orders/{order_id}")
@@ -279,7 +282,7 @@ def list_orders(status: Optional[str] = None) -> Any:
     rows = []
     for o in q.order_by(Order.id.desc()).limit(200):
         pu = User.get_by_id(o.passenger_id)
-        suggestion = _build_suggestion(o.id) if o.status in ("new", "admin_review") else None
+        suggestion = _build_suggestion(o.id)
         rows.append(
             OrderOut(
                 id=o.id,
@@ -465,6 +468,7 @@ class DriverOut(BaseModel):
     balance: Decimal
     online: bool
     loading: bool = False
+    rest_until: Optional[str] = None
 
 
 @router.get("/drivers", response_model=List[DriverOut])
@@ -486,6 +490,7 @@ def list_drivers() -> Any:
                 balance=d.balance,
                 online=d.online,
                 loading=getattr(d, "loading", False),
+                rest_until=str(d.rest_until) if getattr(d, "rest_until", None) else None,
             )
         )
     return out
@@ -500,11 +505,35 @@ class DriverPatchIn(BaseModel):
     balance: Optional[Decimal] = None
     direction_id: Optional[int] = None
     status: Optional[str] = None
+    rest_hours: Optional[int] = None
+    clear_rest: Optional[bool] = None
+
+
+def _driver_in_trip(driver_id: int) -> bool:
+    from app.models import AssignmentStatus, OrderStatus
+
+    return (
+        Order.select()
+        .join(OrderDriverAssignment, on=(OrderDriverAssignment.order_id == Order.id))
+        .where(
+            (OrderDriverAssignment.driver_id == driver_id)
+            & (OrderDriverAssignment.status == AssignmentStatus.ACCEPTED.value)
+            & (Order.status == OrderStatus.IN_PROGRESS.value)
+        )
+        .exists()
+    )
 
 
 @router.patch("/drivers/{driver_id}")
 def patch_driver(driver_id: int, body: DriverPatchIn, user: User = Depends(require_admin)) -> Any:
-    updates = {k: v for k, v in body.model_dump(exclude_unset=True).items() if v is not None}
+    data = body.model_dump(exclude_unset=True)
+    rest_hours = data.pop("rest_hours", None)
+    clear_rest = data.pop("clear_rest", None)
+    updates = {k: v for k, v in data.items() if v is not None}
+    if clear_rest:
+        updates["rest_until"] = None
+    if rest_hours is not None:
+        updates["rest_until"] = datetime.now(timezone.utc) + timedelta(hours=max(1, rest_hours))
     if updates:
         DriverProfile.update(**updates).where(DriverProfile.id == driver_id).execute()
     audit_service.log_action(
@@ -616,10 +645,23 @@ class QueueOut(BaseModel):
     driver_id: int
     position: int
     telegram_id: int
+    full_name: Optional[str] = None
+    car_info: Optional[str] = None
+    loading: bool = False
+    in_trip: bool = False
+    own_seats_reserved: int = 0
+    rest_until: Optional[str] = None
+    online: bool = True
+    loading_eta_at: Optional[str] = None
+    minutes_until_loading: Optional[int] = None
+    loading_label: Optional[str] = None
 
 
 @router.get("/directions/{direction_id}/queue", response_model=List[QueueOut])
 def get_queue(direction_id: int) -> Any:
+    from app.services import queue_eta_service
+
+    eta_map = {s.driver_id: s for s in queue_eta_service.compute_queue_schedule(direction_id)}
     rows = (
         QueueEntry.select()
         .where(QueueEntry.direction_id == direction_id)
@@ -629,7 +671,57 @@ def get_queue(direction_id: int) -> Any:
     for r in rows:
         d = DriverProfile.get_by_id(r.driver_id)
         u = User.get_by_id(d.user_id)
-        out.append(QueueOut(driver_id=r.driver_id, position=r.position, telegram_id=u.telegram_id))
+        slot = eta_map.get(r.driver_id)
+        out.append(
+            QueueOut(
+                driver_id=r.driver_id,
+                position=r.position,
+                telegram_id=u.telegram_id,
+                full_name=d.full_name,
+                car_info=d.car_info,
+                loading=bool(getattr(d, "loading", False)),
+                in_trip=_driver_in_trip(d.id),
+                own_seats_reserved=int(getattr(d, "own_seats_reserved", 0) or 0),
+                rest_until=str(d.rest_until) if getattr(d, "rest_until", None) else None,
+                online=bool(d.online),
+                loading_eta_at=slot.loading_at.isoformat() if slot else None,
+                minutes_until_loading=slot.minutes_until if slot else None,
+                loading_label=slot.label if slot else None,
+            )
+        )
+    return out
+
+
+@router.get("/directions/grouped")
+def list_directions_grouped() -> Any:
+    from app.services.direction_pairs import build_direction_groups
+
+    groups = build_direction_groups(list(Direction.select().order_by(Direction.id)))
+    out = []
+    for g in groups:
+        fwd = g.forward
+        rev = g.reverse
+        out.append(
+            {
+                "label": f"{fwd.from_label} ↔ {fwd.to_label}",
+                "forward": {
+                    "id": fwd.id,
+                    "from_label": fwd.from_label,
+                    "to_label": fwd.to_label,
+                    "estimated_time_min": fwd.estimated_time_min,
+                },
+                "reverse": (
+                    {
+                        "id": rev.id,
+                        "from_label": rev.from_label,
+                        "to_label": rev.to_label,
+                        "estimated_time_min": rev.estimated_time_min,
+                    }
+                    if rev
+                    else None
+                ),
+            }
+        )
     return out
 
 
@@ -701,16 +793,72 @@ def list_proposals(status: Optional[str] = ProposedStatus.PENDING.value) -> Any:
     return out
 
 
-@router.get("/proposals/grouped")
-def list_proposals_grouped(status: Optional[str] = ProposedStatus.PENDING.value) -> Any:
+def _proposal_pair_key(from_label: str, to_label: str) -> str:
     from app.services.route_labels import normalize_route_label
 
-    proposals = list_proposals(status)
+    a, b = sorted([normalize_route_label(from_label), normalize_route_label(to_label)])
+    return f"{a}|{b}"
+
+
+@router.get("/proposals/grouped")
+def list_proposals_grouped(status: Optional[str] = ProposedStatus.PENDING.value) -> Any:
+    q = ProposedDirection.select().order_by(ProposedDirection.created_at).limit(200)
+    if status:
+        q = q.where(ProposedDirection.status == status)
     groups: dict[str, list] = {}
-    for p in proposals:
-        key = f"{normalize_route_label(p.from_label)}|{normalize_route_label(p.to_label)}"
-        groups.setdefault(key, []).append(p.model_dump())
-    return [{"route_key": k, "proposals": v} for k, v in groups.items()]
+    for p in q:
+        drv = DriverProfile.get_by_id(p.proposer_id)
+        item = {
+            "id": p.id,
+            "from_label": p.from_label,
+            "to_label": p.to_label,
+            "estimated_time_min": p.estimated_time_min,
+            "comment": p.comment,
+            "status": p.status,
+            "proposer_id": p.proposer_id,
+            "proposer_name": drv.full_name,
+            "max_seats": getattr(p, "max_seats", 6) or 6,
+            "own_seats": getattr(p, "own_seats", 0) or 0,
+            "price_per_seat": str(getattr(p, "price_per_seat", 0) or 0),
+            "fixed_price": str(getattr(p, "fixed_price", 0) or 0),
+            "created_at": str(p.created_at) if p.created_at else None,
+        }
+        key = _proposal_pair_key(p.from_label, p.to_label)
+        groups.setdefault(key, []).append(item)
+    out = []
+    for key, plist in groups.items():
+        p0 = plist[0]
+        out.append({
+            "route_key": key,
+            "label": f"{p0['from_label']} ↔ {p0['to_label']}",
+            "proposals": plist,
+        })
+    return out
+
+
+@router.post("/backup")
+def create_db_backup(user: User = Depends(require_admin)) -> Any:
+    from fastapi.responses import FileResponse
+    from app.services import backup_service
+
+    try:
+        path = backup_service.create_backup()
+    except ValueError:
+        raise HTTPException(status_code=400, detail="backup_sqlite_only")
+    except FileNotFoundError:
+        raise HTTPException(status_code=404, detail="database_not_found")
+    audit_service.log_action(
+        "database_backup",
+        actor_telegram_id=user.telegram_id,
+        entity_type="system",
+        entity_id="db",
+        payload={"filename": path.name},
+    )
+    return FileResponse(
+        path=str(path),
+        filename=path.name,
+        media_type="application/octet-stream",
+    )
 
 
 class ApproveProposalIn(BaseModel):
@@ -928,6 +1076,8 @@ def list_audit(limit: int = 50) -> Any:
             "action": r.action,
             "entity_type": r.entity_type,
             "entity_id": r.entity_id,
+            "actor_telegram_id": r.actor_telegram_id,
+            "payload": r.payload,
             "created_at": str(r.created_at),
         }
         for r in rows

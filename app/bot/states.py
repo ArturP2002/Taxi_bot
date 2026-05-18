@@ -35,6 +35,10 @@ class DriverOnlineSetup(StatesGroup):
     own_seats = State()
 
 
+class DriverRest(StatesGroup):
+    hours = State()
+
+
 class DriverCode(StatesGroup):
     waiting_code = State()
 

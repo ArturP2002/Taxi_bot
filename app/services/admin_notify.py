@@ -145,16 +145,52 @@ async def notify_proposal_decision(
 
 
 async def notify_driver_loading(
-    bot: Bot, telegram_id: int, driver_name: str, route: str, position: int
+    bot: Bot,
+    telegram_id: int,
+    driver_name: str,
+    route: str,
+    position: int,
+    *,
+    loading_label: str | None = None,
 ) -> None:
     text = (
         f"ℹ️ Водитель {driver_name} на загрузке по маршруту {route}.\n"
-        f"Вы №{position} в очереди. Ожидайте."
+        f"Вы №{position} в очереди."
     )
+    if loading_label:
+        text += f"\n⏱ Ваша загрузка: {loading_label}"
+    else:
+        text += " Ожидайте."
     try:
         await bot.send_message(telegram_id, text)
     except Exception as e:
         logger.warning("Failed to notify queue driver %s: %s", telegram_id, e)
+
+
+async def notify_trip_started(
+    bot: Bot,
+    order_id: int,
+    driver_name: str,
+    *,
+    route: str,
+    seats: int,
+    car_info: str | None,
+    own_seats: int,
+) -> None:
+    car = car_info or "—"
+    text = (
+        f"▶️ Поездка #{order_id} началась\n"
+        f"Водитель: {driver_name}\n"
+        f"Маршрут: {route}\n"
+        f"Мест в заказе: {seats}\n"
+        f"Свои места: {own_seats}\n"
+        f"Авто: {car}"
+    )
+    await notify_admins(bot, text)
+
+
+async def notify_driver_action(bot: Bot, text: str) -> None:
+    await notify_admins(bot, text)
 
 
 async def notify_trip_completed(bot: Bot, order_id: int, driver_name: str, commission) -> None:

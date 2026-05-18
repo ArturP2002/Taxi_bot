@@ -33,6 +33,11 @@ class Settings(BaseSettings):
     auto_assign_enabled: bool = True
     direction_page_size: int = 10
 
+    # Queue ETA: setup before departure, gap between trips, default rest after trip (minutes)
+    queue_loading_setup_min: int = 45
+    queue_loading_gap_min: int = 30
+    queue_default_rest_min: int = 0
+
     @property
     def admin_ids(self) -> FrozenSet[int]:
         if not self.admin_telegram_ids.strip():
