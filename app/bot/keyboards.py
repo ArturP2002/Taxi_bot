@@ -8,6 +8,39 @@ from app.config import get_settings
 BTN_ORDER_RIDE = "🚕 Заказать поездку"
 BTN_DRIVER_MODE = "🧑‍✈️ Я водитель"
 BTN_PASSENGER_MODE = "👤 Режим пассажира"
+BTN_CANCEL = "❌ Отмена"
+
+SEATS_OWN_MIN = 0
+SEATS_OWN_MAX = 8
+SEATS_ORDER_MIN = 1
+SEATS_ORDER_MAX = 8
+SEATS_VEHICLE_MIN = 1
+SEATS_VEHICLE_MAX = 8
+
+# Reply-keyboard labels: must not be captured by FSM text steps (registration, propose route, etc.)
+DRIVER_MENU_TEXTS: frozenset[str] = frozenset({
+    "🟢 Онлайн",
+    "🔴 Оффлайн",
+    "📥 Мой заказ",
+    "👥 Мои пассажиры",
+    "💰 Баланс",
+    "📊 История",
+    "ℹ️ Как считается долг",
+    "💸 Оплатить долг",
+    "🔍 Проверить платёж",
+    "➕ Предложить маршрут",
+    "😴 Отдых",
+    "📞 Связь с админом",
+    BTN_PASSENGER_MODE,
+    "▶️ Старт поездки",
+    "💬 Связь с пассажиром",
+    "🔁 Встать обратно",
+    "✅ Завершить поездку",
+    BTN_CANCEL,
+    BTN_ORDER_RIDE,
+    BTN_DRIVER_MODE,
+    "📞 Связь с водителем",
+})
 
 
 def main_passenger_kb() -> ReplyKeyboardMarkup:
@@ -41,7 +74,7 @@ def main_driver_kb() -> ReplyKeyboardMarkup:
 
 def seats_kb() -> ReplyKeyboardMarkup:
     b = ReplyKeyboardBuilder()
-    for i in range(1, 7):
+    for i in range(SEATS_ORDER_MIN, SEATS_ORDER_MAX + 1):
         b.button(text=str(i))
     b.adjust(3)
     return b.as_markup(resize_keyboard=True)
@@ -49,7 +82,7 @@ def seats_kb() -> ReplyKeyboardMarkup:
 
 def cancel_kb() -> ReplyKeyboardMarkup:
     b = ReplyKeyboardBuilder()
-    b.button(text="❌ Отмена")
+    b.button(text=BTN_CANCEL)
     return b.as_markup(resize_keyboard=True)
 
 
@@ -153,7 +186,7 @@ def passenger_pay_inline(order_id: int) -> InlineKeyboardMarkup:
 
 def online_own_seats_kb() -> ReplyKeyboardMarkup:
     b = ReplyKeyboardBuilder()
-    for i in range(0, 7):
+    for i in range(SEATS_OWN_MIN, SEATS_OWN_MAX + 1):
         b.button(text=str(i))
-    b.adjust(4)
+    b.adjust(3)
     return b.as_markup(resize_keyboard=True)

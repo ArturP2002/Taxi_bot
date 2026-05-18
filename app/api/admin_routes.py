@@ -197,6 +197,7 @@ class OrderPatchIn(BaseModel):
     status: Optional[str] = None
     pickup_location: Optional[str] = None
     pickup_time_text: Optional[str] = None
+    pickup_surcharge: Optional[Decimal] = None
 
 
 @router.patch("/orders/{order_id}")
@@ -655,11 +656,16 @@ class QueueOut(BaseModel):
     loading_eta_at: Optional[str] = None
     minutes_until_loading: Optional[int] = None
     loading_label: Optional[str] = None
+    max_seats: int = 6
+    occupied_seats: int = 0
+    free_seats: int = 0
+    loading_status: Optional[str] = None
+    passengers: List[dict] = []
 
 
 @router.get("/directions/{direction_id}/queue", response_model=List[QueueOut])
 def get_queue(direction_id: int) -> Any:
-    from app.services import queue_eta_service
+    from app.services import queue_eta_service, loading_service
 
     eta_map = {s.driver_id: s for s in queue_eta_service.compute_queue_schedule(direction_id)}
     rows = (
@@ -672,6 +678,18 @@ def get_queue(direction_id: int) -> Any:
         d = DriverProfile.get_by_id(r.driver_id)
         u = User.get_by_id(d.user_id)
         slot = eta_map.get(r.driver_id)
+        snap = loading_service.driver_loading_snapshot(
+            d, in_trip=_driver_in_trip(d.id)
+        )
+        pax = [
+            {
+                "order_id": p.order_id,
+                "seats": p.seats,
+                "from_location": p.from_location,
+                "to_location": p.to_location,
+            }
+            for p in snap.passengers
+        ]
         out.append(
             QueueOut(
                 driver_id=r.driver_id,
@@ -687,9 +705,34 @@ def get_queue(direction_id: int) -> Any:
                 loading_eta_at=slot.loading_at.isoformat() if slot else None,
                 minutes_until_loading=slot.minutes_until if slot else None,
                 loading_label=slot.label if slot else None,
+                max_seats=snap.max_seats,
+                occupied_seats=snap.occupied_seats,
+                free_seats=snap.free_seats,
+                loading_status=snap.status_label,
+                passengers=pax,
             )
         )
     return out
+
+
+@router.get("/directions/{direction_id}/board")
+def direction_board(direction_id: int) -> Any:
+    from app.services import loading_service
+
+    d = Direction.get_by_id(direction_id)
+    waiting = loading_service.direction_waiting_pool(direction_id)
+    loading_cars = [
+        loading_service.snapshot_to_dict(s)
+        for s in loading_service.drivers_loading_on_direction(direction_id)
+    ]
+    queue = get_queue(direction_id)
+    return {
+        "direction_id": direction_id,
+        "label": f"{d.from_label} → {d.to_label}",
+        "waiting": waiting,
+        "loading_cars": loading_cars,
+        "queue": queue,
+    }
 
 
 @router.get("/directions/grouped")

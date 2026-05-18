@@ -337,7 +337,9 @@ function showEditOrder(orderId) {
   html += '<div class="form-group"><label>Мест</label><input id="eo-seats" type="number" value="' + o.seats + '"/></div>';
   html += '<div class="form-group"><label>Откуда (подача)</label><input id="eo-from" value="' + esc(o.from_location) + '"/></div>';
   html += '<div class="form-group"><label>Куда</label><input id="eo-to" value="' + esc(o.to_location) + '"/></div>';
-  html += '<div class="form-group"><label>Время подачи</label><input id="eo-time" value="' + esc(o.pickup_time_text) + '"/></div>';
+  html += '<div class="form-group"><label>Место подачи (адрес)</label><input id="eo-pickup" value="' + esc(o.pickup_location) + '"/></div>';
+  html += '<div class="form-group"><label>Время убытия</label><input id="eo-time" value="' + esc(o.pickup_time_text) + '"/></div>';
+  html += '<div class="form-group"><label>Доплата за подачу (₽)</label><input id="eo-surcharge" type="number" step="0.01" value="0"/></div>';
   html += '<div class="actions"><button class="btn btn-gold" onclick="doEditOrder(' + orderId + ')">Сохранить</button>';
   html += '<button class="btn btn-outline" onclick="closeModal()">Отмена</button></div>';
   openModal(html);
@@ -350,7 +352,9 @@ function doEditOrder(orderId) {
       seats: parseInt(document.getElementById('eo-seats').value) || 1,
       from_location: document.getElementById('eo-from').value.trim(),
       to_location: document.getElementById('eo-to').value.trim(),
-      pickup_time_text: document.getElementById('eo-time').value.trim() || null
+      pickup_location: document.getElementById('eo-pickup').value.trim() || null,
+      pickup_time_text: document.getElementById('eo-time').value.trim() || null,
+      pickup_surcharge: parseFloat(document.getElementById('eo-surcharge').value) || 0
     })
   }).then(function() { closeModal(); toast('Заказ обновлён'); renderOrders(); })
     .catch(function(e) { toast('Ошибка: ' + e.message); });
@@ -726,18 +730,64 @@ function doCreateDirection() {
 }
 
 // Queue
+function renderQueueLeg(board) {
+  var html = '';
+  var w = board.waiting || {};
+  if (w.order_count) {
+    html += '<div style="margin:8px 0;padding:8px;background:rgba(245,197,24,.06);border-radius:8px">';
+    html += '<div style="font-weight:600;color:var(--gold)">📋 Без машины: ' + w.total_seats + ' мест (' + w.order_count + ' заявок)</div>';
+    var olist = w.orders || [];
+    for (var wi = 0; wi < olist.length && wi < 8; wi++) {
+      var wo = olist[wi];
+      html += '<div style="font-size:11px;margin-top:4px">#' + wo.id + ' · ' + wo.seats + ' мест · ' + wo.from_location + '</div>';
+    }
+    html += '</div>';
+  }
+  var cars = board.loading_cars || [];
+  for (var ci = 0; ci < cars.length; ci++) {
+    var c = cars[ci];
+    html += '<div style="margin:8px 0;padding:8px;border-left:2px solid var(--gold)">';
+    html += '<div style="font-weight:600">' + (c.full_name || ('#'+c.driver_id)) + '</div>';
+    html += '<div style="font-size:12px;color:var(--gold)">' + c.status_label + '</div>';
+    var pax = c.passengers || [];
+    for (var pi = 0; pi < pax.length; pi++) {
+      html += '<div style="font-size:11px">#' + pax[pi].order_id + ' · ' + pax[pi].seats + ' мест</div>';
+    }
+    html += '</div>';
+  }
+  var q = ensureArray(board.queue);
+  html += row('В очереди водителей', q.length);
+  for (var j = 0; j < q.length; j++) {
+    var qq = q[j];
+    var name = qq.full_name || ('#' + qq.driver_id);
+    html += '<div class="row"><span class="lbl">' + (j+1) + '. ' + name + '</span><span class="val" style="font-size:11px">';
+    html += (qq.loading_status || '') + ' · свободно ' + (qq.free_seats != null ? qq.free_seats : '?');
+    if (qq.loading_label) html += '<br/>⏱ ' + qq.loading_label;
+    if (qq.passengers && qq.passengers.length) {
+      for (var pj = 0; pj < qq.passengers.length; pj++) {
+        html += '<br/>#' + qq.passengers[pj].order_id + ' · ' + qq.passengers[pj].seats + 'м';
+      }
+    }
+    if (j > 0) html += ' <button class="btn btn-outline" style="padding:4px 8px" onclick="moveQueue(' + board.direction_id + ',' + j + ',-1)">↑</button>';
+    if (j < q.length - 1) html += ' <button class="btn btn-outline" style="padding:4px 8px" onclick="moveQueue(' + board.direction_id + ',' + j + ',1)">↓</button>';
+    html += '</span></div>';
+  }
+  return html;
+}
+
 function renderQueue() {
   api('/api/admin/directions/grouped').then(function(groups) {
     groups = ensureArray(groups);
     if (!groups.length) { content.innerHTML = '<div class="empty">Нет маршрутов</div>'; return; }
     var tasks = [];
     groups.forEach(function(g) {
-      tasks.push({ g: g, leg: g.forward, label: 'Туда' });
+      if (g.forward) tasks.push({ g: g, leg: g.forward, label: 'Туда' });
       if (g.reverse) tasks.push({ g: g, leg: g.reverse, label: '↩' });
     });
     return Promise.all(tasks.map(function(tk) {
-      return api('/api/admin/directions/' + tk.leg.id + '/queue').then(function(q) {
-        return { tk: tk, q: ensureArray(q) };
+      return api('/api/admin/directions/' + tk.leg.id + '/board').then(function(board) {
+        board.direction_id = tk.leg.id;
+        return { tk: tk, board: board };
       });
     })).then(function(rows) {
       var html = '';
@@ -750,25 +800,14 @@ function renderQueue() {
           lastG = r.tk.g;
         }
         html += '<div style="margin-top:8px;font-weight:600;color:var(--gold)">' + r.tk.label + ': ' + r.tk.leg.from_label + ' → ' + r.tk.leg.to_label + '</div>';
-        var q = r.q;
-        html += row('В очереди', q.length);
-        for (var j = 0; j < q.length; j++) {
-          var qq = q[j];
-          var name = qq.full_name || ('#' + qq.driver_id);
-          html += '<div class="row"><span class="lbl">' + (j+1) + '. ' + name + '</span><span class="val" style="font-size:11px">';
-          html += queueDriverStatus(qq) + ' · мест:' + qq.own_seats_reserved;
-          if (qq.loading_label) html += '<br/>⏱ ' + qq.loading_label;
-          if (qq.car_info) html += '<br/>' + qq.car_info;
-          if (j > 0) html += ' <button class="btn btn-outline" style="padding:4px 8px" onclick="moveQueue(' + r.tk.leg.id + ',' + j + ',-1)">↑</button>';
-          if (j < q.length - 1) html += ' <button class="btn btn-outline" style="padding:4px 8px" onclick="moveQueue(' + r.tk.leg.id + ',' + j + ',1)">↓</button>';
-          html += '</span></div>';
-        }
+        html += renderQueueLeg(r.board);
       }
       if (lastG) html += cardEnd();
       content.innerHTML = html;
     });
   }).catch(function(e) { content.innerHTML = '<div class="empty">Ошибка: ' + e.message + '</div>'; });
 }
+
 
 function moveQueue(directionId, index, delta) {
   api('/api/admin/directions/' + directionId + '/queue').then(function(q) {

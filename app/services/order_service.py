@@ -45,7 +45,14 @@ def occupied_seats_for_driver(driver: DriverProfile) -> int:
         .join(OrderDriverAssignment, on=(OrderDriverAssignment.order_id == Order.id))
         .where(
             (OrderDriverAssignment.driver_id == driver.id)
-            & (OrderDriverAssignment.status == AssignmentStatus.ACCEPTED.value)
+            & (
+                OrderDriverAssignment.status.in_(
+                    [
+                        AssignmentStatus.ACCEPTED.value,
+                        AssignmentStatus.PENDING.value,
+                    ]
+                )
+            )
             & (Order.status.in_(list(ACTIVE_ORDER_STATUSES)))
         )
         .scalar()
@@ -123,6 +130,14 @@ def driver_respond(assignment: OrderDriverAssignment, accept: bool) -> Order:
     order = assignment.order
     driver = assignment.driver
     if accept:
+        if not can_assign_order(driver, order):
+            OrderDriverAssignment.update(
+                status=AssignmentStatus.DECLINED.value, responded_at=now
+            ).where(OrderDriverAssignment.id == assignment.id).execute()
+            Order.update(status=OrderStatus.ADMIN_REVIEW.value, updated_at=now).where(
+                Order.id == order.id
+            ).execute()
+            raise ValueError("capacity_exceeded")
         OrderDriverAssignment.update(
             status=AssignmentStatus.ACCEPTED.value, responded_at=now
         ).where(OrderDriverAssignment.id == assignment.id).execute()
@@ -305,36 +320,17 @@ def order_ready_for_dispatch(order: Order) -> bool:
 def suggest_driver_for_order(order: Order) -> Optional[OrderDriverAssignment]:
     if not order_ready_for_dispatch(order):
         return None
-    direction = order.direction
     excluded = set(_declined_driver_ids(order)) | _busy_suggested_driver_ids()
 
-    from app.models import QueueEntry
+    from app.services.loading_service import find_best_driver_for_order
 
-    candidates = (
-        QueueEntry.select(QueueEntry, DriverProfile)
-        .join(DriverProfile, on=(QueueEntry.driver_id == DriverProfile.id))
-        .where(
-            (QueueEntry.direction_id == direction.id)
-            & (DriverProfile.online == True)  # noqa: E712
-            & (DriverProfile.status == "active")
-        )
-        .order_by(QueueEntry.position, QueueEntry.enqueued_at)
-    )
-    for row in candidates:
-        drv = row.driver
-        if drv.id in excluded:
-            continue
-        if not can_assign_order(drv, order):
-            continue
-        if order.direction_id != drv.direction_id:
-            continue
-
+    drv = find_best_driver_for_order(order, excluded=excluded)
+    if drv:
         now = datetime.now(timezone.utc)
         OrderDriverAssignment.update(status=AssignmentStatus.DECLINED.value).where(
             (OrderDriverAssignment.order_id == order.id)
             & (OrderDriverAssignment.status == AssignmentStatus.SUGGESTED.value)
         ).execute()
-
         ass = OrderDriverAssignment.create(
             order=order,
             driver=drv,

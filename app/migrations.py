@@ -30,6 +30,12 @@ MIGRATIONS: list[tuple[str, list[str]]] = [
             "ALTER TABLE driver_profiles ADD COLUMN rest_until TEXT",
         ],
     ),
+    (
+        "20260518_v3",
+        [
+            "ALTER TABLE orders ADD COLUMN pickup_surcharge DECIMAL(12,2) DEFAULT 0",
+        ],
+    ),
 ]
 
 

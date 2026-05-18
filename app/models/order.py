@@ -1,11 +1,14 @@
 import enum
 
+from decimal import Decimal
+
 from peewee import (
     ForeignKeyField,
     TextField,
     IntegerField,
     CharField,
     DateTimeField,
+    DecimalField,
 )
 
 from app.models.base import BaseModel
@@ -58,6 +61,7 @@ class Order(BaseModel):
     ended_at = DateTimeField(null=True)
     pickup_location = TextField(null=True)
     pickup_time_text = TextField(null=True)
+    pickup_surcharge = DecimalField(max_digits=12, decimal_places=2, default=Decimal("0"))
     created_at = DateTimeField(default=utcnow)
     updated_at = DateTimeField(null=True)
 

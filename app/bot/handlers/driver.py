@@ -39,6 +39,9 @@ from app.util.time_format import minutes_to_hours_label, parse_hours_input
 
 router = Router(name="driver")
 
+# Exclude menu button labels from FSM text handlers (otherwise "📊 История" becomes a city name).
+_NOT_MENU_TEXT = ~F.text.in_(keyboards.DRIVER_MENU_TEXTS)
+
 
 def _driver(message: Message) -> DriverProfile:
     u = User.get(telegram_id=message.from_user.id)
@@ -97,8 +100,7 @@ def _in_progress_order(dprof: DriverProfile):
 
 @router.message(F.text == "🟢 Онлайн")
 async def go_online(message: Message, state: FSMContext) -> None:
-    if await state.get_state():
-        return
+    await state.clear()
     ensure_user(message.from_user, prefer_driver=True)
     u = User.get(telegram_id=message.from_user.id)
     if u.role != UserRole.DRIVER.value:
@@ -107,7 +109,11 @@ async def go_online(message: Message, state: FSMContext) -> None:
     dprof = DriverProfile.get(user=u)
     if not dprof.full_name:
         await state.set_state(DriverRegister.route_from)
-        await message.answer("Сначала заполните анкету. Маршрут — откуда (город):")
+        await message.answer(
+            "Сначала заполните анкету. Маршрут — откуда (город):\n"
+            f"({keyboards.BTN_CANCEL} — выйти в меню)",
+            reply_markup=keyboards.cancel_kb(),
+        )
         return
     if dprof.status != DriverStatus.ACTIVE.value:
         await message.answer("Ожидайте подтверждения администратора.")
@@ -132,15 +138,15 @@ async def go_online(message: Message, state: FSMContext) -> None:
     await state.set_state(DriverOnlineSetup.own_seats)
     await state.update_data(driver_go_online=True)
     await message.answer(
-        "Сколько мест занято вашими пассажирами (0–6)?",
+        f"Сколько мест занято вашими пассажирами ({keyboards.SEATS_OWN_MIN}–{keyboards.SEATS_OWN_MAX})?",
         reply_markup=keyboards.online_own_seats_kb(),
     )
 
 
 @router.message(DriverOnlineSetup.own_seats, F.text)
 async def go_online_own_seats(message: Message, state: FSMContext) -> None:
-    if not message.text.isdigit() or int(message.text) not in range(0, 7):
-        await message.answer("Введите число от 0 до 6.")
+    if not message.text.isdigit() or int(message.text) not in range(keyboards.SEATS_OWN_MIN, keyboards.SEATS_OWN_MAX + 1):
+        await message.answer(f"Введите число от {keyboards.SEATS_OWN_MIN} до {keyboards.SEATS_OWN_MAX}.")
         return
     own = int(message.text)
     u = User.get(telegram_id=message.from_user.id)
@@ -161,8 +167,12 @@ async def go_online_own_seats(message: Message, state: FSMContext) -> None:
     lvl = order_service.debt_level(bal)
     msg = "Вы в очереди."
     eta = queue_eta_service.eta_for_driver(d.id, dprof.id)
+    from app.services import loading_service
+
+    snap = loading_service.driver_loading_snapshot(dprof)
+    msg += f"\n{snap.status_label}"
     if eta:
-        msg += f"\n⏱ Загрузка: {eta.label}"
+        msg += f"\n⏱ Ваша очередь: {eta.label}"
         if not eta.is_now:
             msg += f" (~{eta.loading_at.strftime('%d.%m %H:%M')} UTC)"
     if rev:
@@ -180,8 +190,7 @@ async def go_online_own_seats(message: Message, state: FSMContext) -> None:
 
 @router.message(F.text == "🔴 Оффлайн")
 async def go_offline(message: Message, state: FSMContext) -> None:
-    if await state.get_state():
-        return
+    await state.clear()
     try:
         u = User.get(telegram_id=message.from_user.id)
         dprof = DriverProfile.get(user=u)
@@ -202,6 +211,7 @@ async def go_offline(message: Message, state: FSMContext) -> None:
 
 @router.message(F.text == "📥 Мой заказ")
 async def my_order(message: Message, state: FSMContext) -> None:
+    await state.clear()
     ensure_user(message.from_user, prefer_driver=True)
     u = User.get(telegram_id=message.from_user.id)
     if u.role != UserRole.DRIVER.value:
@@ -209,7 +219,11 @@ async def my_order(message: Message, state: FSMContext) -> None:
     dprof = DriverProfile.get(user=u)
     if not dprof.full_name:
         await state.set_state(DriverRegister.route_from)
-        await message.answer("Сначала заполните анкету. Маршрут — откуда (город):")
+        await message.answer(
+            "Сначала заполните анкету. Маршрут — откуда (город):\n"
+            f"({keyboards.BTN_CANCEL} — выйти в меню)",
+            reply_markup=keyboards.cancel_kb(),
+        )
         return
     p = _pending_assignment(dprof)
     if p:
@@ -266,7 +280,21 @@ async def accept(cb: CallbackQuery, state: FSMContext) -> None:
     if ass.driver_id != dprof.id:
         await cb.answer("Чужое назначение", show_alert=True)
         return
-    order_service.driver_respond(ass, accept=True)
+    try:
+        order_service.driver_respond(ass, accept=True)
+    except ValueError as e:
+        if str(e) == "capacity_exceeded":
+            await cb.answer(
+                "Машина уже полная. Админ переназначит пассажира на другую.",
+                show_alert=True,
+            )
+            await cb.message.answer(
+                "Не удалось принять: нет свободных мест. Обратитесь к админу.",
+                reply_markup=keyboards.main_driver_kb(),
+            )
+        else:
+            await cb.answer("Ошибка", show_alert=True)
+        return
     o = Order.get_by_id(ass.order_id)
     dprof = DriverProfile.get_by_id(ass.driver_id)
     from app.services.admin_notify import notify_driver_loading
@@ -329,8 +357,7 @@ async def decline(cb: CallbackQuery, bot: Bot) -> None:
 
 @router.message(F.text == "😴 Отдых")
 async def rest_start(message: Message, state: FSMContext) -> None:
-    if await state.get_state():
-        return
+    await state.clear()
     ensure_user(message.from_user, prefer_driver=True)
     await state.set_state(DriverRest.hours)
     await message.answer(
@@ -340,9 +367,9 @@ async def rest_start(message: Message, state: FSMContext) -> None:
     )
 
 
-@router.message(DriverRest.hours, F.text)
+@router.message(DriverRest.hours, F.text, _NOT_MENU_TEXT)
 async def rest_hours(message: Message, state: FSMContext, bot: Bot) -> None:
-    if message.text == "❌ Отмена":
+    if message.text == keyboards.BTN_CANCEL:
         await state.clear()
         await message.answer("Отменено.", reply_markup=keyboards.main_driver_kb())
         return
@@ -375,8 +402,7 @@ async def start_trip_prompt(message: Message, state: FSMContext) -> None:
     if cur == DriverCode.waiting_code.state:
         await message.answer("Уже жду код. Введите 6 цифр или QR от пассажира.")
         return
-    if cur and cur != DriverCode.waiting_code.state:
-        return
+    await state.clear()
     ensure_user(message.from_user, prefer_driver=True)
     u = User.get(telegram_id=message.from_user.id)
     dprof = DriverProfile.get(user=u)
@@ -396,14 +422,9 @@ async def start_trip_prompt(message: Message, state: FSMContext) -> None:
     )
 
 
-@router.message(DriverCode.waiting_code, F.text)
+@router.message(DriverCode.waiting_code, F.text, _NOT_MENU_TEXT)
 async def enter_code(message: Message, state: FSMContext, bot: Bot) -> None:
-    if message.text in {
-        "🔁 Встать обратно", "✅ Завершить поездку", "💬 Связь с пассажиром",
-        "▶️ Старт поездки",
-    }:
-        return
-    if message.text == "❌ Отмена":
+    if message.text == keyboards.BTN_CANCEL:
         await state.clear()
         await message.answer("Ввод кода отменён.", reply_markup=keyboards.before_trip_kb())
         return
@@ -473,6 +494,7 @@ async def return_queue_flag(message: Message, state: FSMContext) -> None:
 
 @router.message(F.text == "💬 Связь с пассажиром")
 async def driver_chat_start(message: Message, state: FSMContext) -> None:
+    await state.clear()
     ensure_user(message.from_user, prefer_driver=True)
     u = User.get(telegram_id=message.from_user.id)
     dprof = DriverProfile.get(user=u)
@@ -513,8 +535,17 @@ async def driver_relay(message: Message, state: FSMContext, bot: Bot) -> None:
     await message.answer("Отправлено.")
 
 
+@router.message(F.text == keyboards.BTN_CANCEL)
+async def cancel_active_flow(message: Message, state: FSMContext) -> None:
+    if not await state.get_state():
+        return
+    await state.clear()
+    await message.answer("Отменено.", reply_markup=keyboards.main_driver_kb())
+
+
 @router.message(F.text == "✅ Завершить поездку")
 async def complete_trip(message: Message, state: FSMContext, bot: Bot) -> None:
+    await state.clear()
     ensure_user(message.from_user, prefer_driver=True)
     u = User.get(telegram_id=message.from_user.id)
     dprof = DriverProfile.get(user=u)
@@ -548,8 +579,7 @@ async def complete_trip(message: Message, state: FSMContext, bot: Bot) -> None:
 
 @router.message(F.text == "💸 Оплатить долг")
 async def pay_debt(message: Message, state: FSMContext, bot: Bot) -> None:
-    if await state.get_state():
-        return
+    await state.clear()
     ensure_user(message.from_user, prefer_driver=True)
     u = User.get(telegram_id=message.from_user.id)
     dprof = DriverProfile.get(user=u)
@@ -613,8 +643,7 @@ async def pay_debt(message: Message, state: FSMContext, bot: Bot) -> None:
 
 @router.message(F.text == "🔍 Проверить платёж")
 async def check_payment(message: Message, state: FSMContext) -> None:
-    if await state.get_state():
-        return
+    await state.clear()
     ensure_user(message.from_user, prefer_driver=True)
     u = User.get(telegram_id=message.from_user.id)
     dprof = DriverProfile.get(user=u)
@@ -682,8 +711,7 @@ async def check_payment(message: Message, state: FSMContext) -> None:
 
 @router.message(F.text == "💰 Баланс")
 async def balance(message: Message, state: FSMContext) -> None:
-    if await state.get_state():
-        return
+    await state.clear()
     ensure_user(message.from_user, prefer_driver=True)
     u = User.get(telegram_id=message.from_user.id)
     dprof = DriverProfile.get(user=u)
@@ -699,8 +727,7 @@ async def balance(message: Message, state: FSMContext) -> None:
 
 @router.message(F.text == "ℹ️ Как считается долг")
 async def debt_info(message: Message, state: FSMContext) -> None:
-    if await state.get_state():
-        return
+    await state.clear()
     s = get_settings()
     await message.answer(
         f"Комиссия = {s.commission_percent}% × (цена_за_место × места платформы + фикс).\n"
@@ -711,8 +738,7 @@ async def debt_info(message: Message, state: FSMContext) -> None:
 
 @router.message(F.text == "👥 Мои пассажиры")
 async def my_passengers(message: Message, state: FSMContext) -> None:
-    if await state.get_state():
-        return
+    await state.clear()
     ensure_user(message.from_user, prefer_driver=True)
     u = User.get(telegram_id=message.from_user.id)
     dprof = DriverProfile.get(user=u)
@@ -729,17 +755,22 @@ async def my_passengers(message: Message, state: FSMContext) -> None:
         await message.answer("Нет принятых пассажиров на загрузке.")
         return
     occ = order_service.occupied_seats_for_driver(dprof)
-    lines = [f"#{o.id}: {o.from_location} → {o.to_location}, мест {o.seats}" for o in rows]
+    from app.services import loading_service
+
+    snap = loading_service.driver_loading_snapshot(dprof)
+    lines = [f"#{o.id}: {o.from_location} → {o.to_location}, {o.seats} мест" for o in rows]
+    extra = "\nПодача, время и доплата за подачу задаёт админ."
     await message.answer(
+        f"{snap.status_label}\n"
         f"Пассажиры ({len(rows)} заказов, {occ} мест):\n" + "\n".join(lines)
-        + f"\n\nСвободно мест платформы: {order_service.platform_capacity_remaining(dprof)}"
+        + f"\n\nСвободно для платформы: {snap.free_seats} мест"
+        + extra
     )
 
 
 @router.message(F.text == "📞 Связь с админом")
 async def driver_admin_chat(message: Message, state: FSMContext) -> None:
-    if await state.get_state():
-        return
+    await state.clear()
     ensure_user(message.from_user, prefer_driver=True)
     await state.set_state(AdminRelayChat.active)
     await state.update_data(admin_relay_driver_id=_driver(message).id)
@@ -765,8 +796,7 @@ async def driver_admin_relay(message: Message, state: FSMContext, bot: Bot) -> N
 
 @router.message(F.text == "📊 История")
 async def history(message: Message, state: FSMContext) -> None:
-    if await state.get_state():
-        return
+    await state.clear()
     ensure_user(message.from_user, prefer_driver=True)
     u = User.get(telegram_id=message.from_user.id)
     dprof = DriverProfile.get(user=u)
@@ -782,19 +812,20 @@ async def history(message: Message, state: FSMContext) -> None:
 
 @router.message(F.text == "➕ Предложить маршрут")
 async def propose_start(message: Message, state: FSMContext) -> None:
+    await state.clear()
     ensure_user(message.from_user, prefer_driver=True)
     await state.set_state(ProposeDirection.from_label)
     await message.answer("Откуда (город):")
 
 
-@router.message(ProposeDirection.from_label, F.text)
+@router.message(ProposeDirection.from_label, F.text, _NOT_MENU_TEXT)
 async def propose_from(message: Message, state: FSMContext) -> None:
     await state.update_data(from_label=message.text.strip())
     await state.set_state(ProposeDirection.to_label)
     await message.answer("Куда (город):")
 
 
-@router.message(ProposeDirection.to_label, F.text)
+@router.message(ProposeDirection.to_label, F.text, _NOT_MENU_TEXT)
 async def propose_to(message: Message, state: FSMContext) -> None:
     to_city = message.text.strip()
     data = await state.get_data()
@@ -815,7 +846,7 @@ async def propose_return(cb: CallbackQuery, state: FSMContext) -> None:
     await cb.answer()
 
 
-@router.message(ProposeDirection.eta_min, F.text)
+@router.message(ProposeDirection.eta_min, F.text, _NOT_MENU_TEXT)
 async def propose_eta(message: Message, state: FSMContext) -> None:
     try:
         eta_min = parse_hours_input(message.text)
@@ -827,7 +858,7 @@ async def propose_eta(message: Message, state: FSMContext) -> None:
     await message.answer("Комментарий (или «-»):")
 
 
-@router.message(ProposeDirection.comment, F.text)
+@router.message(ProposeDirection.comment, F.text, _NOT_MENU_TEXT)
 async def propose_finish(message: Message, state: FSMContext, bot: Bot) -> None:
     data = await state.get_data()
     await state.clear()
@@ -856,14 +887,14 @@ async def propose_finish(message: Message, state: FSMContext, bot: Bot) -> None:
     )
 
 
-@router.message(DriverRegister.route_from, F.text)
+@router.message(DriverRegister.route_from, F.text, _NOT_MENU_TEXT)
 async def reg_route_from(message: Message, state: FSMContext) -> None:
     await state.update_data(route_from=message.text.strip())
     await state.set_state(DriverRegister.route_to)
     await message.answer("Куда (город):")
 
 
-@router.message(DriverRegister.route_to, F.text)
+@router.message(DriverRegister.route_to, F.text, _NOT_MENU_TEXT)
 async def reg_route_to(message: Message, state: FSMContext) -> None:
     to_city = message.text.strip()
     data = await state.get_data()
@@ -884,48 +915,81 @@ async def reg_return_route(cb: CallbackQuery, state: FSMContext) -> None:
     await cb.answer()
 
 
-@router.message(DriverRegister.full_name, F.text)
+@router.message(DriverRegister.return_route, F.text, _NOT_MENU_TEXT)
+async def reg_return_route_text(message: Message) -> None:
+    await message.answer(
+        "Сначала выберите «Да, еду обратно» или «Нет, только туда» кнопкой под сообщением выше."
+    )
+
+
+@router.message(DriverRegister.full_name, F.text, _NOT_MENU_TEXT)
 async def reg_name(message: Message, state: FSMContext) -> None:
-    await state.update_data(full_name=message.text.strip())
+    name = message.text.strip()
+    if len(name) < 2:
+        await message.answer("Введите ФИО (минимум 2 символа).")
+        return
+    await state.update_data(full_name=name)
+    ensure_user(message.from_user, prefer_driver=True)
+    u = User.get(telegram_id=message.from_user.id)
+    DriverProfile.update(full_name=name).where(DriverProfile.user == u).execute()
     await state.set_state(DriverRegister.car_info)
     await message.answer("Автомобиль (марка, модель, гос. номер):")
 
 
-@router.message(DriverRegister.car_info, F.text)
+@router.message(DriverRegister.car_info, F.text, _NOT_MENU_TEXT)
 async def reg_car(message: Message, state: FSMContext) -> None:
     await state.update_data(car_info=message.text.strip())
     await state.set_state(DriverRegister.phone)
     await message.answer("Номер телефона:")
 
 
-@router.message(DriverRegister.phone, F.text)
+@router.message(DriverRegister.phone, F.text, _NOT_MENU_TEXT)
 async def reg_phone(message: Message, state: FSMContext) -> None:
     await state.update_data(phone=message.text.strip())
     await state.set_state(DriverRegister.max_seats)
-    await message.answer("Всего мест в машине (1–6):")
+    await message.answer(
+        f"Всего мест в машине ({keyboards.SEATS_VEHICLE_MIN}–{keyboards.SEATS_VEHICLE_MAX}):"
+    )
 
 
-@router.message(DriverRegister.max_seats, F.text)
+@router.message(DriverRegister.max_seats, F.text, _NOT_MENU_TEXT)
 async def reg_max_seats(message: Message, state: FSMContext) -> None:
-    if not message.text.isdigit() or int(message.text) not in range(1, 7):
-        await message.answer("Введите число 1–6.")
+    if not message.text.isdigit() or int(message.text) not in range(
+        keyboards.SEATS_VEHICLE_MIN, keyboards.SEATS_VEHICLE_MAX + 1
+    ):
+        await message.answer(
+            f"Введите число {keyboards.SEATS_VEHICLE_MIN}–{keyboards.SEATS_VEHICLE_MAX}."
+        )
         return
     await state.update_data(max_seats=int(message.text))
     await state.set_state(DriverRegister.own_seats)
-    await message.answer("Сколько мест обычно занимают ваши пассажиры (0–6)?")
+    await message.answer(
+        f"Сколько мест обычно занимают ваши пассажиры "
+        f"({keyboards.SEATS_OWN_MIN}–{keyboards.SEATS_OWN_MAX})?"
+    )
 
 
-@router.message(DriverRegister.own_seats, F.text)
+@router.message(DriverRegister.own_seats, F.text, _NOT_MENU_TEXT)
 async def reg_own_seats(message: Message, state: FSMContext) -> None:
-    if not message.text.isdigit() or int(message.text) not in range(0, 7):
-        await message.answer("Введите число 0–6.")
+    data = await state.get_data()
+    max_seats = int(data.get("max_seats", keyboards.SEATS_VEHICLE_MAX))
+    if not message.text.isdigit() or int(message.text) not in range(
+        keyboards.SEATS_OWN_MIN, keyboards.SEATS_OWN_MAX + 1
+    ):
+        await message.answer(
+            f"Введите число {keyboards.SEATS_OWN_MIN}–{keyboards.SEATS_OWN_MAX}."
+        )
         return
-    await state.update_data(own_seats=int(message.text))
+    own = int(message.text)
+    if own >= max_seats:
+        await message.answer(f"Должно быть меньше {max_seats} (всего мест в машине).")
+        return
+    await state.update_data(own_seats=own)
     await state.set_state(DriverRegister.price_per_seat)
     await message.answer("Тариф: цена за место (₽, число):")
 
 
-@router.message(DriverRegister.price_per_seat, F.text)
+@router.message(DriverRegister.price_per_seat, F.text, _NOT_MENU_TEXT)
 async def reg_price(message: Message, state: FSMContext) -> None:
     try:
         price = Decimal(message.text.replace(",", ".").strip())
@@ -937,7 +1001,7 @@ async def reg_price(message: Message, state: FSMContext) -> None:
     await message.answer("Фиксированная доплата за рейс (₽, 0 если нет):")
 
 
-@router.message(DriverRegister.fixed_price, F.text)
+@router.message(DriverRegister.fixed_price, F.text, _NOT_MENU_TEXT)
 async def reg_fixed(message: Message, state: FSMContext, bot: Bot) -> None:
     import logging
     logger = logging.getLogger("taxi_bot.driver")
@@ -947,23 +1011,34 @@ async def reg_fixed(message: Message, state: FSMContext, bot: Bot) -> None:
         await message.answer("Введите число.")
         return
     data = await state.get_data()
-    await state.clear()
     ensure_user(message.from_user, prefer_driver=True)
     u = User.get(telegram_id=message.from_user.id)
     dprof = DriverProfile.get(user=u)
-    max_seats = data.get("max_seats", 6)
-    own_seats = data.get("own_seats", 0)
+    full_name = (data.get("full_name") or dprof.full_name or "").strip()
+    if not full_name:
+        await state.set_state(DriverRegister.full_name)
+        await message.answer("ФИО не указано. Введите ФИО:")
+        return
+    max_seats = int(data.get("max_seats", keyboards.SEATS_VEHICLE_MAX))
+    own_seats = int(data.get("own_seats", 0))
+    if own_seats >= max_seats:
+        await state.set_state(DriverRegister.own_seats)
+        await message.answer(
+            f"Своих мест должно быть меньше {max_seats}. "
+            f"Введите число {keyboards.SEATS_OWN_MIN}–{max_seats - 1}:"
+        )
+        return
     price = Decimal(data.get("price_per_seat", "0"))
-    DriverProfile.update(
-        full_name=data.get("full_name", ""),
-        car_info=data.get("car_info", ""),
-        phone=data.get("phone", ""),
-        max_seats=max_seats,
-        own_seats_reserved=own_seats,
-        proposed_price_per_seat=price,
-        proposed_fixed_price=fixed,
-        status=DriverStatus.PENDING.value,
-    ).where(DriverProfile.id == dprof.id).execute()
+    dprof.full_name = full_name
+    dprof.car_info = (data.get("car_info") or "").strip()
+    dprof.phone = (data.get("phone") or "").strip()
+    dprof.max_seats = max_seats
+    dprof.own_seats_reserved = own_seats
+    dprof.proposed_price_per_seat = price
+    dprof.proposed_fixed_price = fixed
+    dprof.status = DriverStatus.PENDING.value
+    dprof.save()
+    await state.clear()
     from app.services import direction_pairs
 
     include_return = data.get("include_return", True)
@@ -984,7 +1059,7 @@ async def reg_fixed(message: Message, state: FSMContext, bot: Bot) -> None:
     summary = (
         "✅ Анкета отправлена!\n\n"
         f"Маршрут(ы): {route_txt}\n"
-        f"ФИО: {data.get('full_name')}\n"
+        f"ФИО: {full_name}\n"
         f"Авто: {data.get('car_info')}\n"
         f"Тел: {data.get('phone')}\n"
         f"Мест: {max_seats} (своих: {own_seats})\n"
@@ -995,14 +1070,14 @@ async def reg_fixed(message: Message, state: FSMContext, bot: Bot) -> None:
     try:
         await notify_driver_registered(
             bot,
-            data.get("full_name", ""),
+            full_name,
             message.from_user.id,
             route=f"{data['route_from']} → {data['route_to']}",
             max_seats=max_seats,
             tariff=f"{price}/{fixed}",
         )
         await notify_proposal(
-            bot, data["route_from"], data["route_to"], data.get("full_name", ""),
+            bot, data["route_from"], data["route_to"], full_name,
             paired=include_return,
         )
     except Exception as e:

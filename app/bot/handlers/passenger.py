@@ -126,8 +126,8 @@ async def seats_pick(message: Message, state: FSMContext) -> None:
         await state.clear()
         await message.answer("Отменено.", reply_markup=keyboards.main_passenger_kb())
         return
-    if message.text not in {str(i) for i in range(1, 7)}:
-        await message.answer("Выберите 1–6.")
+    if message.text not in {str(i) for i in range(keyboards.SEATS_ORDER_MIN, keyboards.SEATS_ORDER_MAX + 1)}:
+        await message.answer(f"Выберите {keyboards.SEATS_ORDER_MIN}–{keyboards.SEATS_ORDER_MAX}.")
         return
     await state.update_data(seats=int(message.text))
     await state.set_state(PassengerOrder.phone)
@@ -174,6 +174,10 @@ async def phone_enter(message: Message, state: FSMContext, bot: Bot) -> None:
     buf = io.BytesIO()
     qr.save(buf, format="PNG")
     buf.seek(0)
+    from app.services import loading_service
+
+    pool = loading_service.direction_waiting_pool(direction.id)
+    loading_cars = loading_service.drivers_loading_on_direction(direction.id)
     caption = (
         f"✅ Заявка #{order.id} создана!\n"
         f"Направление: {direction.from_label} → {direction.to_label}\n"
@@ -184,6 +188,14 @@ async def phone_enter(message: Message, state: FSMContext, bot: Bot) -> None:
         "Назовите код водителю при посадке или покажите QR.\n"
         "«📞 Связь с водителем» — после назначения. «📞 Связь с админом» — в любой момент."
     )
+    if loading_cars:
+        lines = [c.status_label for c in loading_cars[:4]]
+        caption += "\n\n🚐 Сейчас набирают: " + "; ".join(lines)
+    if pool["order_count"]:
+        caption += (
+            f"\n📋 В очереди на рейс: {pool['total_seats']} мест "
+            f"({pool['order_count']} заявок). При нехватке мест вас пересадят на другую машину."
+        )
     extra_kb = None
     if order_status == OrderStatus.AWAITING_PAYMENT.value:
         fare = passenger_payment_service.passenger_fare_amount(order)
