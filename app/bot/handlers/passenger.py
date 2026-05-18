@@ -45,10 +45,7 @@ async def _show_directions_page(message_or_cb, state: FSMContext, page: int = 0,
         await message_or_cb.answer(text, reply_markup=kb)
 
 
-@router.message(F.text == "🚕 Заказать поездку")
-@router.message(Command("order"))
-async def start_order(message: Message, state: FSMContext) -> None:
-    ensure_user(message.from_user)
+async def continue_start_order(message: Message, state: FSMContext) -> None:
     directions = direction_search.list_enabled_directions()
     if not directions:
         await message.answer("Направления пока недоступны.")

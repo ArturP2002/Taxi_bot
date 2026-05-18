@@ -837,8 +837,12 @@ def list_proposals_grouped(status: Optional[str] = ProposedStatus.PENDING.value)
 
 
 @router.post("/backup")
-def create_db_backup(user: User = Depends(require_admin)) -> Any:
-    from fastapi.responses import FileResponse
+async def create_db_backup(
+    request: Request,
+    user: User = Depends(require_admin),
+) -> Any:
+    from aiogram.types import FSInputFile
+
     from app.services import backup_service
 
     try:
@@ -847,18 +851,25 @@ def create_db_backup(user: User = Depends(require_admin)) -> Any:
         raise HTTPException(status_code=400, detail="backup_sqlite_only")
     except FileNotFoundError:
         raise HTTPException(status_code=404, detail="database_not_found")
+
+    bot = _bot(request)
+    try:
+        await bot.send_document(
+            user.telegram_id,
+            FSInputFile(path),
+            caption=f"💾 Бэкап БД\n{path.name}",
+        )
+    except Exception:
+        raise HTTPException(status_code=503, detail="telegram_send_failed")
+
     audit_service.log_action(
         "database_backup",
         actor_telegram_id=user.telegram_id,
         entity_type="system",
         entity_id="db",
-        payload={"filename": path.name},
+        payload={"filename": path.name, "sent_to_telegram": user.telegram_id},
     )
-    return FileResponse(
-        path=str(path),
-        filename=path.name,
-        media_type="application/octet-stream",
-    )
+    return {"ok": True, "filename": path.name}
 
 
 class ApproveProposalIn(BaseModel):

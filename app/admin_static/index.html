@@ -249,7 +249,7 @@ function renderDashboard() {
       var online = drivers.filter(function(d){return d.online}).length;
       var debt = drivers.reduce(function(s,d){return s + parseFloat(d.balance||0)}, 0);
 
-      var html = '<div class="actions" style="margin-bottom:12px"><button class="btn btn-outline" onclick="downloadBackup()">💾 Бэкап БД</button></div>';
+      var html = '<div class="actions" style="margin-bottom:12px"><button class="btn btn-outline" onclick="sendBackup()">💾 Бэкап в Telegram</button></div>';
       html += '<div class="stats-grid">';
       html += stat(needDrv, 'Ждут водителя');
       html += stat(pendingDrv, 'Новые водители');
@@ -925,25 +925,11 @@ function renderAudit() {
   }).catch(function(e) { content.innerHTML = '<div class="empty">Ошибка: ' + e.message + '</div>'; });
 }
 
-function downloadBackup() {
-  var headers = { 'Authorization': 'Bearer ' + token, 'ngrok-skip-browser-warning': 'true' };
-  fetch('/api/admin/backup', { method: 'POST', headers: headers, cache: 'no-store' })
-    .then(function(r) {
-      if (!r.ok) return r.text().then(function(t) { throw new Error(t); });
-      return r.blob();
-    })
-    .then(function(blob) {
-      var url = URL.createObjectURL(blob);
-      var a = document.createElement('a');
-      a.href = url;
-      a.download = 'taxi_backup_' + Date.now() + '.db';
-      document.body.appendChild(a);
-      a.click();
-      a.remove();
-      URL.revokeObjectURL(url);
-      toast('Бэкап скачан');
-    })
-    .catch(function(e) { toast('Ошибка бэкапа: ' + e.message); });
+function sendBackup() {
+  toast('Отправляем бэкап…');
+  api('/api/admin/backup', { method: 'POST' })
+    .then(function() { toast('Бэкап отправлен в этот чат Telegram'); })
+    .catch(function(e) { toast('Ошибка: ' + e.message); });
 }
 
 // Init

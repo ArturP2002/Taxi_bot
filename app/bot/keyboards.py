@@ -5,13 +5,17 @@ from aiogram.utils.keyboard import ReplyKeyboardBuilder, InlineKeyboardBuilder
 
 from app.config import get_settings
 
+BTN_ORDER_RIDE = "🚕 Заказать поездку"
+BTN_DRIVER_MODE = "🧑‍✈️ Я водитель"
+BTN_PASSENGER_MODE = "👤 Режим пассажира"
+
 
 def main_passenger_kb() -> ReplyKeyboardMarkup:
     b = ReplyKeyboardBuilder()
-    b.button(text="🚕 Заказать поездку")
+    b.button(text=BTN_ORDER_RIDE)
     b.button(text="📞 Связь с водителем")
     b.button(text="📞 Связь с админом")
-    b.button(text="🧑‍✈️ Я водитель")
+    b.button(text=BTN_DRIVER_MODE)
     b.adjust(1)
     return b.as_markup(resize_keyboard=True)
 
@@ -30,7 +34,7 @@ def main_driver_kb() -> ReplyKeyboardMarkup:
     b.button(text="➕ Предложить маршрут")
     b.button(text="😴 Отдых")
     b.button(text="📞 Связь с админом")
-    b.button(text="👤 Режим пассажира")
+    b.button(text=BTN_PASSENGER_MODE)
     b.adjust(2)
     return b.as_markup(resize_keyboard=True)
 
