@@ -129,6 +129,15 @@ async def notify_driver_declined(bot: Bot, order_id: int, driver_name: str) -> N
     await notify_admins(bot, text)
 
 
+async def notify_driver_approved_welcome(bot: Bot, telegram_id: int) -> None:
+    from app.bot.messages import DRIVER_WELCOME_AFTER_APPROVAL
+
+    try:
+        await bot.send_message(telegram_id, DRIVER_WELCOME_AFTER_APPROVAL)
+    except Exception as e:
+        logger.warning("Failed to send driver welcome %s: %s", telegram_id, e)
+
+
 async def notify_proposal_decision(
     bot: Bot, telegram_id: int, *, approved: bool, route: str, queue_position: int | None = None
 ) -> None:

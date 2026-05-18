@@ -575,10 +575,13 @@ async def approve_driver(driver_id: int, body: ApproveDriverIn, request: Request
             f"Макс. мест: {body.max_seats}\n\n"
             "Направление будет назначено позже. Ожидайте."
         )
+    from app.services.admin_notify import notify_driver_approved_welcome
+
     try:
         await bot.send_message(drv_user.telegram_id, msg)
     except Exception:
         pass
+    await notify_driver_approved_welcome(bot, drv_user.telegram_id)
     return {"ok": True}
 
 
