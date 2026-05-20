@@ -102,12 +102,18 @@ MIGRATIONS: list[tuple[str, list[str]]] = [
 
 
 def run_migrations() -> None:
+    import logging
+
+    log = logging.getLogger("taxi_bot.migrations")
     db = get_db()
     db.execute_sql(
         "CREATE TABLE IF NOT EXISTS schema_migrations (id VARCHAR(64) PRIMARY KEY, applied_at TEXT)"
     )
     cur = db.execute_sql("SELECT id FROM schema_migrations")
     done = {row[0] for row in cur.fetchall()}
+    pending = [mig_id for mig_id, _ in MIGRATIONS if mig_id not in done]
+    if pending:
+        log.info("Applying migrations: %s", ", ".join(pending))
     for mig_id, statements in MIGRATIONS:
         if mig_id in done:
             continue
@@ -115,10 +121,16 @@ def run_migrations() -> None:
             try:
                 db.execute_sql(sql)
             except Exception as e:
-                if "duplicate column" in str(e).lower():
+                msg = str(e).lower()
+                if (
+                    "duplicate column" in msg
+                    or "already exists" in msg
+                ):
                     continue
+                log.exception("Migration %s failed on SQL: %s", mig_id, sql)
                 raise
         db.execute_sql(
             "INSERT INTO schema_migrations (id, applied_at) VALUES (?, datetime('now'))",
             (mig_id,),
         )
+        log.info("Migration applied: %s", mig_id)

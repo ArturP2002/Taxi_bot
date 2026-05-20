@@ -35,6 +35,7 @@ async def lifespan(app: FastAPI):
 
     init_db()
     settings = get_settings()
+    _log_startup_state(_logger, settings)
     bot = Bot(settings.bot_token) if settings.bot_token else None
     dp = build_dispatcher(bot) if bot else None
     app.state.bot = bot
@@ -65,6 +66,16 @@ async def lifespan(app: FastAPI):
                 _logger.info("Webhook set: %s", webhook_url)
             except Exception as e:
                 _logger.error("Failed to set webhook: %s", e)
+            try:
+                info = await bot.get_webhook_info()
+                _logger.info(
+                    "Webhook info: url=%s pending=%s last_error=%s",
+                    info.url,
+                    info.pending_update_count,
+                    info.last_error_message,
+                )
+            except Exception as e:
+                _logger.warning("get_webhook_info failed: %s", e)
 
         from app.services.scheduler_service import loading_reminder_loop
 
@@ -88,15 +99,58 @@ async def lifespan(app: FastAPI):
         await bot.session.close()
 
 
+def _log_startup_state(log: logging.Logger, settings) -> None:
+    """Log DB path, admin IDs count and webhook URL so we can debug "анкета не падает"."""
+    from app.db import get_db
+    from app.models import DriverProfile, ProposedDirection, User
+
+    db = get_db()
+    db_path = getattr(db, "database", "?")
+    try:
+        drivers = DriverProfile.select().count()
+        users = User.select().count()
+        proposals = ProposedDirection.select().count()
+    except Exception as e:
+        drivers = users = proposals = -1
+        log.warning("Failed to count rows on startup: %s", e)
+    webhook_url = (
+        f"{settings.base_url.rstrip('/')}{settings.webhook_path}"
+        if settings.base_url and settings.webhook_path
+        else "<not configured>"
+    )
+    log.info(
+        "Startup: db_path=%s db_url=%s admin_ids=%d webhook_url=%s base_url=%s "
+        "drivers=%d users=%d proposals=%d",
+        db_path,
+        settings.database_url,
+        len(settings.admin_ids),
+        webhook_url,
+        settings.base_url,
+        drivers,
+        users,
+        proposals,
+    )
+
+
 class DBConnectionMiddleware(BaseHTTPMiddleware):
     """Open DB connection at request start, close at end (critical for PostgreSQL)."""
 
     async def dispatch(self, request: Request, call_next):
-        ensure_connection()
+        try:
+            ensure_connection()
+        except Exception as e:
+            logger.exception("DB connection failed: %s", e)
+            return JSONResponse(
+                status_code=503,
+                content={"detail": f"db_unavailable: {type(e).__name__}"},
+            )
         try:
             response = await call_next(request)
         finally:
-            close_connection()
+            try:
+                close_connection()
+            except Exception as e:
+                logger.warning("DB close failed: %s", e)
         return response
 
 
@@ -168,6 +222,30 @@ def create_app() -> FastAPI:
     @app.get("/health")
     def health() -> dict:
         return {"status": "ok"}
+
+    @app.get("/healthz")
+    def healthz() -> dict:
+        """Public health w/ DB path + counts (no PII). Used for deploy verification."""
+        from app.db import ensure_connection, get_db
+        from app.models import DriverProfile, Order, ProposedDirection, User
+
+        try:
+            ensure_connection()
+            db = get_db()
+            db_path = str(getattr(db, "database", "?"))
+            return {
+                "status": "ok",
+                "db_path": db_path,
+                "admin_ids_configured": len(settings.admin_ids),
+                "bot_token_configured": bool((settings.bot_token or "").strip()),
+                "base_url": settings.base_url,
+                "users_total": User.select().count(),
+                "drivers_total": DriverProfile.select().count(),
+                "orders_total": Order.select().count(),
+                "proposals_total": ProposedDirection.select().count(),
+            }
+        except Exception as e:
+            return {"status": "db_error", "error": f"{type(e).__name__}: {e}"}
 
     @app.post(settings.webhook_path)
     async def telegram_webhook(request: Request) -> Response:
