@@ -16,6 +16,12 @@ class DriverRegister(StatesGroup):
     return_route = State()
     full_name = State()
     car_info = State()
+    photo_front = State()
+    photo_back = State()
+    photo_left = State()
+    photo_right = State()
+    photo_salon = State()
+    photo_salon_extra = State()
     phone = State()
     max_seats = State()
     own_seats = State()
@@ -54,3 +60,11 @@ class DriverRelayChat(StatesGroup):
 class AdminRelayChat(StatesGroup):
     active = State()
     order_id = State()
+
+
+class DriverLoadingPhoto(StatesGroup):
+    waiting = State()
+
+
+class DriverTransferRequest(StatesGroup):
+    note = State()

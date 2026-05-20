@@ -9,6 +9,7 @@ from aiogram.types import Message, CallbackQuery, BufferedInputFile
 
 from app.bot import keyboards
 from app.bot.states import PassengerOrder, RelayChat, AdminRelayChat
+from app.bot import messages as bot_messages
 from app.bot.messages import send_passenger_rules
 from app.bot.users import ensure_user
 from app.config import get_settings
@@ -179,12 +180,8 @@ async def phone_enter(message: Message, state: FSMContext, bot: Bot) -> None:
     pool = loading_service.direction_waiting_pool(direction.id)
     loading_cars = loading_service.drivers_loading_on_direction(direction.id)
     caption = (
-        f"✅ Заявка #{order.id} создана!\n"
-        f"Направление: {direction.from_label} → {direction.to_label}\n"
-        f"Откуда: {order.from_location}\n"
-        f"Куда: {order.to_location}\n"
-        f"Мест: {order.seats}\n"
-        f"Код: {code}\n\n"
+        bot_messages.format_order_summary(order, direction, extra=f"Код: {code}")
+        + "\n\n"
         "Назовите код водителю при посадке или покажите QR.\n"
         "«📞 Связь с водителем» — после назначения. «📞 Связь с админом» — в любой момент."
     )
@@ -194,8 +191,14 @@ async def phone_enter(message: Message, state: FSMContext, bot: Bot) -> None:
     if pool["order_count"]:
         caption += (
             f"\n📋 В очереди на рейс: {pool['total_seats']} мест "
-            f"({pool['order_count']} заявок). При нехватке мест вас пересадят на другую машину."
+            f"({pool['order_count']} заявок)."
         )
+    from app.services import overflow_service
+
+    if overflow_service.order_has_overflow(order):
+        overflow_service.mark_order_overflow_review(order)
+        order = Order.get_by_id(order.id)
+        caption += f"\n\n{bot_messages.PASSENGER_OVERFLOW_MSG}"
     extra_kb = None
     if order_status == OrderStatus.AWAITING_PAYMENT.value:
         fare = passenger_payment_service.passenger_fare_amount(order)
@@ -208,7 +211,19 @@ async def phone_enter(message: Message, state: FSMContext, bot: Bot) -> None:
         reply_markup=extra_kb or keyboards.main_passenger_kb(),
     )
 
-    if order_status == OrderStatus.NEW.value:
+    if order.status == OrderStatus.ADMIN_REVIEW.value:
+        from app.services.admin_notify import notify_sos_overflow
+
+        await notify_sos_overflow(
+            bot,
+            order.id,
+            seats=order.seats,
+            direction_from=direction.from_label,
+            direction_to=direction.to_label,
+            from_loc=order.from_location,
+            to_loc=order.to_location,
+        )
+    elif order_status == OrderStatus.NEW.value:
         suggestion = order_service.suggest_driver_for_order(order)
         suggested_name = None
         assignment_id = None

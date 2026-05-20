@@ -21,6 +21,7 @@ from app.models import (
     PaymentStatus,
     User,
 )
+from app.config import get_settings
 from app.services import order_service, queue_service, proposed_service, audit_service
 from app.services.payment_provider import get_payment_provider
 
@@ -195,13 +196,20 @@ class OrderPatchIn(BaseModel):
     to_location: Optional[str] = None
     seats: Optional[int] = None
     status: Optional[str] = None
+    direction_id: Optional[int] = None
+    platform_seats: Optional[int] = None
     pickup_location: Optional[str] = None
     pickup_time_text: Optional[str] = None
     pickup_surcharge: Optional[Decimal] = None
 
 
 @router.patch("/orders/{order_id}")
-def patch_order(order_id: int, body: OrderPatchIn, user: User = Depends(require_admin)) -> Any:
+async def patch_order(
+    order_id: int,
+    body: OrderPatchIn,
+    request: Request,
+    user: User = Depends(require_admin),
+) -> Any:
     o = Order.get_by_id(order_id)
     updates = {k: v for k, v in body.model_dump(exclude_unset=True).items() if v is not None}
     if updates:
@@ -209,7 +217,157 @@ def patch_order(order_id: int, body: OrderPatchIn, user: User = Depends(require_
     audit_service.log_action(
         "order_patch", actor_telegram_id=user.telegram_id, entity_type="order", entity_id=str(order_id)
     )
+    o = Order.get_by_id(order_id)
+    if any(k in updates for k in ("pickup_location", "pickup_time_text", "seats")):
+        try:
+            from app.services.loading_notify import broadcast_loading_update
+
+            bot = _bot(request)
+            await broadcast_loading_update(bot, o.direction_id, trigger_order_id=o.id)
+        except Exception:
+            pass
     return {"ok": True}
+
+
+class ReassignIn(BaseModel):
+    driver_id: int
+    pickup_location: Optional[str] = None
+    pickup_time_text: Optional[str] = None
+
+
+@router.post("/orders/{order_id}/unassign")
+async def unassign_order_endpoint(
+    order_id: int, request: Request, user: User = Depends(require_admin)
+) -> Any:
+    from app.bot import messages as bot_messages
+    from app.services.loading_notify import broadcast_loading_update
+
+    o = Order.get_by_id(order_id)
+    old_id = order_service.unassign_order_from_driver(o, actor_telegram_id=user.telegram_id)
+    o = Order.get_by_id(order_id)
+    bot = _bot(request)
+    if old_id:
+        old_drv = DriverProfile.get_by_id(old_id)
+        try:
+            await bot.send_message(
+                old_drv.user.telegram_id,
+                bot_messages.DRIVER_OVERFLOW_MSG.format(order_id=order_id),
+            )
+        except Exception:
+            pass
+    try:
+        await bot.send_message(
+            o.passenger.telegram_id,
+            bot_messages.PASSENGER_OVERFLOW_MSG,
+        )
+    except Exception:
+        pass
+    await broadcast_loading_update(bot, o.direction_id)
+    return {"ok": True, "previous_driver_id": old_id}
+
+
+@router.post("/orders/{order_id}/reassign")
+async def reassign_order_endpoint(
+    order_id: int,
+    body: ReassignIn,
+    request: Request,
+    user: User = Depends(require_admin),
+) -> Any:
+    from app.bot import messages as bot_messages
+    from app.services.loading_notify import broadcast_loading_update
+
+    o = Order.get_by_id(order_id)
+    new_drv = DriverProfile.get_by_id(body.driver_id)
+    try:
+        ass = order_service.reassign_order(
+            o,
+            new_drv,
+            pickup_location=body.pickup_location,
+            pickup_time_text=body.pickup_time_text,
+            actor_telegram_id=user.telegram_id,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    o = Order.get_by_id(order_id)
+    d = Direction.get_by_id(o.direction_id)
+    bot = _bot(request)
+    text = (
+        bot_messages.format_order_summary(o, d, extra="Откройте «Мой заказ».")
+        + f"\nПодача: {body.pickup_location or '—'} {body.pickup_time_text or ''}"
+    )
+    try:
+        await bot.send_message(
+            new_drv.user.telegram_id, text, reply_markup=keyboards.assignment_inline(ass.id)
+        )
+    except Exception:
+        pass
+    try:
+        await bot.send_message(
+            o.passenger.telegram_id,
+            bot_messages.format_order_summary(
+                o, d, driver_name=new_drv.full_name, extra=bot_messages.PASSENGER_BOARDING_CHECKLIST
+            ),
+        )
+    except Exception:
+        pass
+    Order.update(transfer_requested_at=None, transfer_note=None).where(Order.id == o.id).execute()
+    await broadcast_loading_update(bot, o.direction_id)
+    return {"assignment_id": ass.id}
+
+
+@router.get("/orders/{order_id}/timeline")
+def order_timeline(order_id: int) -> Any:
+    from app.models import AuditLog, AssignmentStatus
+
+    o = Order.get_by_id(order_id)
+    assignments = []
+    for a in order_service.list_order_assignments(order_id):
+        drv = DriverProfile.get_by_id(a.driver_id)
+        assignments.append({
+            "id": a.id,
+            "status": a.status,
+            "driver_id": a.driver_id,
+            "driver_name": drv.full_name,
+            "assigned_at": str(a.assigned_at) if a.assigned_at else None,
+            "responded_at": str(a.responded_at) if a.responded_at else None,
+        })
+    events = list(
+        AuditLog.select()
+        .where((AuditLog.entity_type == "order") & (AuditLog.entity_id == str(order_id)))
+        .order_by(AuditLog.created_at)
+        .limit(50)
+    )
+    accepted = next(
+        (a for a in assignments if a["status"] == AssignmentStatus.ACCEPTED.value), None
+    )
+    loading_snap = None
+    if accepted:
+        from app.services import loading_service
+
+        drv = DriverProfile.get_by_id(accepted["driver_id"])
+        snap = loading_service.driver_loading_snapshot(drv)
+        loading_snap = loading_service.snapshot_to_dict(snap)
+    return {
+        "order": {
+            "id": o.id,
+            "status": o.status,
+            "passenger_payment_status": o.passenger_payment_status,
+            "created_at": str(o.created_at) if o.created_at else None,
+            "code_issued_at": str(o.code_issued_at) if o.code_issued_at else None,
+            "started_at": str(o.started_at) if o.started_at else None,
+            "ended_at": str(o.ended_at) if o.ended_at else None,
+            "transfer_requested_at": str(o.transfer_requested_at)
+            if getattr(o, "transfer_requested_at", None)
+            else None,
+            "transfer_note": getattr(o, "transfer_note", None),
+        },
+        "assignments": assignments,
+        "audit": [
+            {"action": e.action, "at": str(e.created_at), "payload": e.payload}
+            for e in events
+        ],
+        "loading_snapshot": loading_snap,
+    }
 
 
 @router.post("/orders/{order_id}/cancel")
@@ -356,11 +514,23 @@ async def assign_order(
     except Exception:
         pass
     try:
+        from app.bot import messages as bot_messages
+
         await bot.send_message(
             o.passenger.telegram_id,
-            f"Водитель назначен по заказу #{o.id}.\n"
-            f"Подача: {body.pickup_location or '—'} {body.pickup_time_text or ''}",
+            bot_messages.format_order_summary(
+                o,
+                d,
+                driver_name=drv.full_name,
+                extra=bot_messages.PASSENGER_BOARDING_CHECKLIST,
+            ),
         )
+    except Exception:
+        pass
+    try:
+        from app.services.loading_notify import broadcast_loading_update
+
+        await broadcast_loading_update(bot, o.direction_id)
     except Exception:
         pass
     return {"assignment_id": ass.id}
@@ -982,6 +1152,62 @@ def list_proposals_grouped(status: Optional[str] = ProposedStatus.PENDING.value)
     return out
 
 
+@router.get("/drivers/{driver_id}/photos")
+def driver_registration_photos(driver_id: int) -> Any:
+    from app.services.photo_service import list_registration_photos
+
+    rows = list_registration_photos(driver_id)
+    return [
+        {"kind": p.kind, "file_id": p.file_id, "url": f"/api/admin/telegram-file/{p.file_id}"}
+        for p in rows
+    ]
+
+
+@router.get("/telegram-file/{file_id}")
+async def telegram_file_proxy(file_id: str) -> Any:
+    import httpx
+    from fastapi.responses import Response
+
+    from app.config import get_settings as gs
+
+    token = gs().bot_token
+    if not token:
+        raise HTTPException(status_code=503, detail="no_bot_token")
+    async with httpx.AsyncClient() as client:
+        r = await client.get(
+            f"https://api.telegram.org/bot{token}/getFile",
+            params={"file_id": file_id},
+        )
+        data = r.json()
+        if not data.get("ok"):
+            raise HTTPException(status_code=404, detail="file_not_found")
+        path = data["result"]["file_path"]
+        fr = await client.get(f"https://api.telegram.org/file/bot{token}/{path}")
+    return Response(content=fr.content, media_type=fr.headers.get("content-type", "image/jpeg"))
+
+
+@router.get("/reserve-groups")
+def list_reserve_groups() -> Any:
+    from app.models import RouteReserveGroup, ReserveGroupStatus
+    from app.services import reserve_service
+
+    out = []
+    for g in RouteReserveGroup.select().where(
+        RouteReserveGroup.status == ReserveGroupStatus.COLLECTING.value
+    ):
+        drivers = reserve_service.unique_proposers_in_group(g.id)
+        out.append({
+            "id": g.id,
+            "route_key": g.route_key,
+            "from_label": g.from_label,
+            "to_label": g.to_label,
+            "drivers_count": len(drivers),
+            "needed": get_settings().route_reserve_min_drivers,
+            "drivers": [{"id": d.id, "name": d.full_name} for d in drivers],
+        })
+    return out
+
+
 @router.post("/backup")
 async def create_db_backup(
     request: Request,
@@ -1190,7 +1416,12 @@ class ManualConfirmIn(BaseModel):
 
 
 @router.post("/payments/{payment_id}/confirm")
-def confirm_payment_manual(payment_id: int, body: ManualConfirmIn, user: User = Depends(require_admin)) -> Any:
+async def confirm_payment_manual(
+    payment_id: int,
+    body: ManualConfirmIn,
+    request: Request,
+    user: User = Depends(require_admin),
+) -> Any:
     """Admin manually confirms a payment (e.g. cash/transfer outside YooKassa)."""
     pr = PaymentRecord.get_by_id(payment_id)
     if pr.status == PaymentStatus.CONFIRMED.value:
@@ -1212,6 +1443,17 @@ def confirm_payment_manual(payment_id: int, body: ManualConfirmIn, user: User = 
         new_bal = Decimal("0")
     DriverProfile.update(balance=new_bal).where(DriverProfile.id == drv.id).execute()
     PaymentRecord.update(status=PaymentStatus.CONFIRMED.value, amount=amount).where(PaymentRecord.id == pr.id).execute()
+    drv = DriverProfile.get_by_id(drv.id)
+    from app.services.debt_service import apply_debt_block_if_needed
+    from app.services.admin_notify import notify_debt_auto_blocked, notify_driver_debt_blocked
+
+    blocked = apply_debt_block_if_needed(drv)
+    if blocked:
+        bot = _bot(request)
+        await notify_debt_auto_blocked(
+            bot, drv.full_name or str(drv.id), drv.balance, drv.id
+        )
+        await notify_driver_debt_blocked(bot, drv.user.telegram_id, drv.balance)
     audit_service.log_action(
         "payment_confirmed_manual",
         actor_telegram_id=user.telegram_id,
@@ -1219,7 +1461,7 @@ def confirm_payment_manual(payment_id: int, body: ManualConfirmIn, user: User = 
         entity_id=str(payment_id),
         payload={"amount": str(amount), "new_balance": str(new_bal)},
     )
-    return {"ok": True, "amount": str(amount), "new_balance": str(new_bal)}
+    return {"ok": True, "amount": str(amount), "new_balance": str(new_bal), "blocked": blocked}
 
 
 @router.get("/audit")

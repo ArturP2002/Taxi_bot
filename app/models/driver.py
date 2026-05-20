@@ -30,6 +30,7 @@ class DriverProfile(BaseModel):
     is_primary_on_direction = BooleanField(default=False)
     own_seats_reserved = IntegerField(default=0)
     loading = BooleanField(default=False)
+    loading_photos_ok_at = DateTimeField(null=True)
     tariff_note = TextField(null=True)
     proposed_price_per_seat = DecimalField(max_digits=12, decimal_places=2, null=True)
     proposed_fixed_price = DecimalField(max_digits=12, decimal_places=2, null=True)

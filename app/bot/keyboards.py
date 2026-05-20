@@ -37,6 +37,7 @@ DRIVER_MENU_TEXTS: frozenset[str] = frozenset({
     "💬 Связь с пассажиром",
     "🔁 Встать обратно",
     "✅ Завершить поездку",
+    "🔄 Передать пассажира админу",
     BTN_CANCEL,
     BTN_ORDER_RIDE,
     BTN_DRIVER_MODE,
@@ -165,8 +166,23 @@ def before_trip_kb() -> ReplyKeyboardMarkup:
     b = ReplyKeyboardBuilder()
     b.button(text="▶️ Старт поездки")
     b.button(text="💬 Связь с пассажиром")
+    b.button(text="🔄 Передать пассажира админу")
     b.adjust(1)
     return b.as_markup(resize_keyboard=True)
+
+
+def skip_salon_extra_kb() -> ReplyKeyboardMarkup:
+    b = ReplyKeyboardBuilder()
+    b.button(text="⏭ Без второго фото салона")
+    b.adjust(1)
+    return b.as_markup(resize_keyboard=True)
+
+
+def loading_photos_done_kb() -> InlineKeyboardMarkup:
+    ib = InlineKeyboardBuilder()
+    ib.button(text="✅ Фото готовы — на загрузку", callback_data="loading_photos_done")
+    ib.adjust(1)
+    return ib.as_markup()
 
 
 def trip_actions_kb() -> ReplyKeyboardMarkup:

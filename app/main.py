@@ -1,3 +1,4 @@
+import asyncio
 import logging
 import time
 from contextlib import asynccontextmanager
@@ -38,6 +39,9 @@ async def lifespan(app: FastAPI):
     dp = build_dispatcher(bot) if bot else None
     app.state.bot = bot
     app.state.dp = dp
+    stop_scheduler = asyncio.Event()
+    app.state.scheduler_stop = stop_scheduler
+    scheduler_task = None
 
     if bot:
         try:
@@ -62,7 +66,19 @@ async def lifespan(app: FastAPI):
             except Exception as e:
                 _logger.error("Failed to set webhook: %s", e)
 
+        from app.services.scheduler_service import loading_reminder_loop
+
+        scheduler_task = asyncio.create_task(loading_reminder_loop(bot, stop_scheduler))
+
     yield
+
+    stop_scheduler.set()
+    if scheduler_task:
+        scheduler_task.cancel()
+        try:
+            await scheduler_task
+        except asyncio.CancelledError:
+            pass
 
     if bot:
         try:

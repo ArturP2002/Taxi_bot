@@ -115,9 +115,9 @@ async def finalize_driver_registration(
 
     proposal_error: Optional[str] = None
     try:
-        from app.services import direction_pairs
+        from app.services import reserve_service
 
-        direction_pairs.create_paired_proposals(
+        reserve_service.create_reserved_paired_proposals(
             dprof,
             route_from,
             route_to,
@@ -149,6 +149,22 @@ async def finalize_driver_registration(
         )
     except Exception as e:
         logger.warning("Admin notify failed for driver %s: %s", dprof.id, e)
+
+    from app.bot.messages import DRIVER_LAUNCH_MESSAGE
+    from app.services.photo_service import send_registration_album_to_admins
+
+    try:
+        await bot.send_message(telegram_id, DRIVER_LAUNCH_MESSAGE)
+    except Exception as e:
+        logger.warning("Launch message failed for %s: %s", telegram_id, e)
+    try:
+        await send_registration_album_to_admins(
+            bot,
+            dprof.id,
+            caption=f"👤 Фото авто: {full_name}\n{route_from} → {route_to}",
+        )
+    except Exception as e:
+        logger.warning("Registration album failed: %s", e)
 
     route_txt = f"{route_from} → {route_to}"
     if include_return:

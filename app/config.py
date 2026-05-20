@@ -43,9 +43,9 @@ class Settings(BaseSettings):
 
     qr_token_ttl_minutes: int = 120
 
-    debt_warn: int = 100
-    debt_restrict: int = 150
-    debt_block: int = 200
+    debt_warn: int = 5000
+    debt_restrict: int = 8000
+    debt_block: int = 10000
 
     commission_percent: int = 10
     auto_assign_enabled: bool = True
@@ -55,6 +55,10 @@ class Settings(BaseSettings):
     queue_loading_setup_min: int = 45
     queue_loading_gap_min: int = 30
     queue_default_rest_min: int = 0
+
+    route_reserve_min_drivers: int = 3
+    loading_reminder_minutes_before: int = 30
+    queue_underfill_notify_min_orders: int = 1
 
     # Driver risk (30 days window)
     driver_declines_suspicious_30d: int = 5

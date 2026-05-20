@@ -481,3 +481,95 @@ def reject_suggestion(
         payload={"driver_id": assignment.driver_id},
     )
     return suggest_driver_for_order(order)
+
+
+def unassign_order_from_driver(
+    order: Order,
+    *,
+    actor_telegram_id: Optional[int] = None,
+) -> Optional[int]:
+    """Decline active pending/accepted assignments. Returns previous driver_id."""
+    now = datetime.now(timezone.utc)
+    prev = (
+        OrderDriverAssignment.select()
+        .where(
+            (OrderDriverAssignment.order_id == order.id)
+            & (
+                OrderDriverAssignment.status.in_(
+                    [
+                        AssignmentStatus.PENDING.value,
+                        AssignmentStatus.ACCEPTED.value,
+                    ]
+                )
+            )
+        )
+        .order_by(OrderDriverAssignment.assigned_at.desc())
+        .first()
+    )
+    if not prev:
+        return None
+    driver_id = _assignment_driver_pk(prev)
+    OrderDriverAssignment.update(
+        status=AssignmentStatus.DECLINED.value,
+        responded_at=now,
+    ).where(
+        (OrderDriverAssignment.order_id == order.id)
+        & (
+            OrderDriverAssignment.status.in_(
+                [
+                    AssignmentStatus.PENDING.value,
+                    AssignmentStatus.ACCEPTED.value,
+                    AssignmentStatus.SUGGESTED.value,
+                ]
+            )
+        )
+    ).execute()
+    driver = DriverProfile.get_by_id(driver_id)
+    update_driver_loading(driver)
+    if order.status in (OrderStatus.ASSIGNED.value, OrderStatus.IN_PROGRESS.value):
+        Order.update(status=OrderStatus.ADMIN_REVIEW.value, updated_at=now).where(
+            Order.id == order.id
+        ).execute()
+    audit_service.log_action(
+        "order_unassigned",
+        actor_telegram_id=actor_telegram_id,
+        entity_type="order",
+        entity_id=str(order.id),
+        payload={"driver_id": driver_id},
+    )
+    return driver_id
+
+
+def reassign_order(
+    order: Order,
+    new_driver: DriverProfile,
+    *,
+    pickup_location: Optional[str] = None,
+    pickup_time_text: Optional[str] = None,
+    actor_telegram_id: Optional[int] = None,
+) -> OrderDriverAssignment:
+    old_driver_id = unassign_order_from_driver(order, actor_telegram_id=actor_telegram_id)
+    order = Order.get_by_id(order.id)
+    ass = assign_order_to_driver(
+        order,
+        new_driver,
+        pickup_location=pickup_location,
+        pickup_time_text=pickup_time_text,
+        actor_telegram_id=actor_telegram_id,
+    )
+    audit_service.log_action(
+        "order_reassigned",
+        actor_telegram_id=actor_telegram_id,
+        entity_type="order",
+        entity_id=str(order.id),
+        payload={"from_driver_id": old_driver_id, "to_driver_id": new_driver.id},
+    )
+    return ass
+
+
+def list_order_assignments(order_id: int) -> List[OrderDriverAssignment]:
+    return list(
+        OrderDriverAssignment.select()
+        .where(OrderDriverAssignment.order_id == order_id)
+        .order_by(OrderDriverAssignment.assigned_at)
+    )

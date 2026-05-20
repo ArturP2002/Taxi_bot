@@ -12,6 +12,8 @@ from app.models.order import (
     AssignmentStatus,
 )
 from app.models.proposed import ProposedDirection, ProposedStatus, DirectionPioneer
+from app.models.reserve import RouteReserveGroup, ReserveGroupStatus
+from app.models.photos import DriverRegistrationPhoto, LoadingPhoto
 from app.models.financial import (
     CommissionLedger,
     PaymentRecord,
@@ -29,8 +31,11 @@ ALL_MODELS = [
     QueueEntry,
     Order,
     OrderDriverAssignment,
+    RouteReserveGroup,
     ProposedDirection,
     DirectionPioneer,
+    DriverRegistrationPhoto,
+    LoadingPhoto,
     CommissionLedger,
     PaymentRecord,
     AuditLog,
@@ -62,4 +67,8 @@ __all__ = [
     "AuditLog",
     "DriverEvent",
     "DriverEventType",
+    "RouteReserveGroup",
+    "ReserveGroupStatus",
+    "DriverRegistrationPhoto",
+    "LoadingPhoto",
 ]

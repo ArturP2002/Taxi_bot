@@ -206,19 +206,118 @@ async def notify_driver_loading(
     position: int,
     *,
     loading_label: str | None = None,
+    custom_text: str | None = None,
 ) -> None:
-    text = (
-        f"ℹ️ Водитель {driver_name} на загрузке по маршруту {route}.\n"
-        f"Вы №{position} в очереди."
-    )
-    if loading_label:
-        text += f"\n⏱ Ваша загрузка: {loading_label}"
+    if custom_text:
+        text = custom_text
     else:
-        text += " Ожидайте."
+        text = (
+            f"ℹ️ Водитель {driver_name} на загрузке по маршруту {route}.\n"
+            f"Вы №{position} в очереди."
+        )
+        if loading_label:
+            text += f"\n⏱ Ваша загрузка: {loading_label}"
+        else:
+            text += " Ожидайте."
     try:
         await bot.send_message(telegram_id, text)
     except Exception as e:
         logger.warning("Failed to notify queue driver %s: %s", telegram_id, e)
+
+
+async def notify_sos_overflow(
+    bot: Bot,
+    order_id: int,
+    *,
+    seats: int,
+    direction_from: str,
+    direction_to: str,
+    from_loc: str,
+    to_loc: str,
+) -> None:
+    text = (
+        f"🆘 SOS — ПЕРЕБОР\n"
+        f"Заказ #{order_id}\n"
+        f"📍 {direction_from} → {direction_to}\n"
+        f"Откуда: {from_loc}\n"
+        f"Куда: {to_loc}\n"
+        f"Мест: {seats}\n\n"
+        "Нет машины с достаточным числом мест. Пересадите вручную в админке."
+    )
+    await notify_admins(bot, text)
+
+
+async def notify_queue_underfill(
+    bot: Bot,
+    direction_from: str,
+    direction_to: str,
+    *,
+    order_count: int,
+    total_seats: int,
+) -> None:
+    text = (
+        f"📉 Недобор на рейсе {direction_from} → {direction_to}\n"
+        f"Заявок: {order_count}, мест: {total_seats}\n"
+        "Можно созвониться с водителями/пассажирами."
+    )
+    await notify_admins(bot, text)
+
+
+async def notify_driver_transfer_request(
+    bot: Bot,
+    *,
+    order_id: int,
+    driver_name: str,
+    note: str | None,
+) -> None:
+    text = (
+        f"🔄 Водитель просит пересадку\n"
+        f"Заказ #{order_id}\n"
+        f"Водитель: {driver_name}\n"
+    )
+    if note:
+        text += f"Комментарий: {note}\n"
+    text += "\nОткройте админку → заказ → Переназначить."
+    await notify_admins(bot, text)
+
+
+async def notify_debt_auto_blocked(bot: Bot, driver_name: str, balance, driver_id: int) -> None:
+    text = (
+        f"⛔ Водитель заблокирован по долгу\n"
+        f"{driver_name} · ID {driver_id}\n"
+        f"Долг: {balance} ₽"
+    )
+    await notify_admins(bot, text)
+
+
+async def notify_driver_debt_blocked(bot: Bot, telegram_id: int, balance) -> None:
+    try:
+        await bot.send_message(
+            telegram_id,
+            f"⛔ Вы заблокированы: долг {balance} ₽ превышает лимит.\n"
+            "Оплатите долг и обратитесь к администратору.",
+        )
+    except Exception as e:
+        logger.warning("debt block notify %s: %s", telegram_id, e)
+
+
+async def notify_proposal_reserved(
+    bot: Bot,
+    telegram_id: int,
+    *,
+    route: str,
+    position: int,
+    total_drivers: int,
+    needed: int,
+) -> None:
+    try:
+        await bot.send_message(
+            telegram_id,
+            f"📋 Маршрут {route} в резерве.\n"
+            f"Водителей: {total_drivers}/{needed}. Вы №{position} среди предложивших.",
+        )
+    except Exception as e:
+        logger.warning("reserve notify %s: %s", telegram_id, e)
 
 
 async def notify_trip_started(

@@ -55,4 +55,9 @@ def record_commission(order: Order, driver: DriverProfile, *, on_start: bool = T
     )
     new_balance = Decimal(str(driver.balance)) + amount
     DriverProfile.update(balance=new_balance).where(DriverProfile.id == driver.id).execute()
+    driver = DriverProfile.get_by_id(driver.id)
+    from app.services.debt_service import apply_debt_block_if_needed
+
+    if apply_debt_block_if_needed(driver):
+        driver = DriverProfile.get_by_id(driver.id)
     return row

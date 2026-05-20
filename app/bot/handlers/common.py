@@ -104,14 +104,11 @@ async def admin_confirm_suggestion(cb: CallbackQuery, bot: Bot) -> None:
     driver = DriverProfile.get_by_id(ass.driver_id)
     d = Direction.get_by_id(order.direction_id)
 
+    from app.bot import messages as bot_messages
+
     text = (
-        f"Вам назначен заказ #{order.id}\n"
-        f"{d.from_label} → {d.to_label}\n"
-        f"Откуда: {order.from_location}\n"
-        f"Куда: {order.to_location}\n"
-        f"Мест: {order.seats}\n"
-        f"Подача: {order.pickup_location or '—'} {order.pickup_time_text or ''}\n"
-        "Откройте «Мой заказ»."
+        bot_messages.format_order_summary(order, d, extra="Откройте «Мой заказ».")
+        + f"\nПодача: {order.pickup_location or '—'} {order.pickup_time_text or ''}"
     )
     try:
         await bot.send_message(
@@ -124,7 +121,7 @@ async def admin_confirm_suggestion(cb: CallbackQuery, bot: Bot) -> None:
     try:
         await bot.send_message(
             order.passenger.telegram_id,
-            f"Водитель назначен по заказу #{order.id}.",
+            bot_messages.format_order_summary(order, d, extra=bot_messages.PASSENGER_BOARDING_CHECKLIST),
         )
     except Exception:
         pass

@@ -255,7 +255,7 @@ function renderTab(tab) {
 }
 
 function statusLabel(s) {
-  var m = { new:'Новый', assigned:'Назначен', in_progress:'В пути', completed:'Завершён', admin_review:'На проверке', awaiting_payment:'Ждёт оплату', cancelled:'Отменён', pending:'Ожидает', confirmed:'Подтверждён', awaiting_admin:'Ждёт админа', active:'Активен', suspicious:'На проверке', blocked:'Заблокирован', failed:'Ошибка', suggested:'Предложен' };
+  var m = { new:'Новый', assigned:'Назначен', in_progress:'В пути', completed:'Завершён', admin_review:'На проверке', awaiting_payment:'Ждёт оплату', cancelled:'Отменён', pending:'Ожидает', reserved:'В резерве', confirmed:'Подтверждён', awaiting_admin:'Ждёт админа', active:'Активен', suspicious:'На проверке', blocked:'Заблокирован', failed:'Ошибка', suggested:'Предложен' };
   return m[s] || s;
 }
 function fmtHours(min) {
@@ -361,7 +361,12 @@ function renderOrders() {
         html += '<div class="actions"><button class="btn btn-success" onclick="confirmPassengerPay(' + o.id + ')">Подтвердить оплату</button></div>';
       }
       if (o.status !== 'completed' && o.status !== 'cancelled') {
-        html += '<div class="actions"><button class="btn btn-outline" onclick="showEditOrder(' + o.id + ')">✏️ Изменить</button>';
+        html += '<div class="actions"><button class="btn btn-outline" onclick="showOrderTimeline(' + o.id + ')">📋 Этапы</button>';
+        html += '<button class="btn btn-outline" onclick="showEditOrder(' + o.id + ')">✏️ Изменить</button>';
+        if (o.status === 'assigned' || o.status === 'admin_review' || o.status === 'in_progress') {
+          html += '<button class="btn btn-outline" onclick="doUnassign(' + o.id + ')">Снять водителя</button>';
+          html += '<button class="btn btn-gold" onclick="showReassignModal(' + o.id + ',' + o.direction_id + ')">Переназначить</button>';
+        }
         html += '<button class="btn btn-danger" onclick="cancelOrder(' + o.id + ')">Отменить заказ</button></div>';
       }
       html += cardEnd();
@@ -389,23 +394,76 @@ function showEditOrder(orderId) {
   html += '<div class="form-group"><label>Место подачи (адрес)</label><input id="eo-pickup" value="' + esc(o.pickup_location) + '"/></div>';
   html += '<div class="form-group"><label>Время убытия</label><input id="eo-time" value="' + esc(o.pickup_time_text) + '"/></div>';
   html += '<div class="form-group"><label>Доплата за подачу (₽)</label><input id="eo-surcharge" type="number" step="0.01" value="0"/></div>';
+  html += '<div class="form-group"><label>Статус</label><select id="eo-status"><option value="">— не менять —</option>';
+  ['new','awaiting_payment','assigned','in_progress','admin_review','cancelled'].forEach(function(s) {
+    html += '<option value="' + s + '"' + (o.status === s ? ' selected' : '') + '>' + statusLabel(s) + '</option>';
+  });
+  html += '</select></div>';
   html += '<div class="actions"><button class="btn btn-gold" onclick="doEditOrder(' + orderId + ')">Сохранить</button>';
   html += '<button class="btn btn-outline" onclick="closeModal()">Отмена</button></div>';
   openModal(html);
 }
 
 function doEditOrder(orderId) {
-  api('/api/admin/orders/' + orderId, {
-    method: 'PATCH',
-    body: JSON.stringify({
-      seats: parseInt(document.getElementById('eo-seats').value) || 1,
-      from_location: document.getElementById('eo-from').value.trim(),
-      to_location: document.getElementById('eo-to').value.trim(),
-      pickup_location: document.getElementById('eo-pickup').value.trim() || null,
-      pickup_time_text: document.getElementById('eo-time').value.trim() || null,
-      pickup_surcharge: parseFloat(document.getElementById('eo-surcharge').value) || 0
-    })
-  }).then(function() { closeModal(); toast('Заказ обновлён'); renderOrders(); })
+  var body = {
+    seats: parseInt(document.getElementById('eo-seats').value) || 1,
+    from_location: document.getElementById('eo-from').value.trim(),
+    to_location: document.getElementById('eo-to').value.trim(),
+    pickup_location: document.getElementById('eo-pickup').value.trim() || null,
+    pickup_time_text: document.getElementById('eo-time').value.trim() || null,
+    pickup_surcharge: parseFloat(document.getElementById('eo-surcharge').value) || 0
+  };
+  var st = document.getElementById('eo-status').value;
+  if (st) body.status = st;
+  api('/api/admin/orders/' + orderId, { method: 'PATCH', body: JSON.stringify(body) })
+    .then(function() { closeModal(); toast('Заказ обновлён'); renderOrders(); })
+    .catch(function(e) { toast('Ошибка: ' + e.message); });
+}
+
+function showOrderTimeline(orderId) {
+  api('/api/admin/orders/' + orderId + '/timeline').then(function(tl) {
+    var html = '<h3>Заказ #' + orderId + '</h3>';
+    html += row('Статус', statusLabel(tl.order.status));
+    if (tl.order.transfer_requested_at) {
+      html += '<div style="color:var(--gold);margin:8px 0">🔄 Запрос пересадки: ' + (tl.order.transfer_note || '') + '</div>';
+    }
+    html += '<div style="margin-top:12px;font-size:12px;color:var(--muted)">Назначения</div>';
+    for (var i = 0; i < tl.assignments.length; i++) {
+      var a = tl.assignments[i];
+      html += '<div style="padding:6px 0;border-bottom:1px solid var(--border)">' + badge(a.status) + ' ' + (a.driver_name || a.driver_id) + '<br/><span style="font-size:11px;color:var(--muted)">' + (a.assigned_at || '') + '</span></div>';
+    }
+    if (tl.loading_snapshot) {
+      html += '<div style="margin-top:10px">' + (tl.loading_snapshot.status_label || '') + '</div>';
+    }
+    html += '<div class="actions"><button class="btn btn-outline" onclick="closeModal()">Закрыть</button></div>';
+    openModal(html);
+  }).catch(function(e) { toast('Ошибка: ' + e.message); });
+}
+
+function doUnassign(orderId) {
+  if (!confirm('Снять водителя с заказа #' + orderId + '?')) return;
+  api('/api/admin/orders/' + orderId + '/unassign', { method: 'POST' })
+    .then(function() { toast('Водитель снят'); renderOrders(); })
+    .catch(function(e) { toast('Ошибка: ' + e.message); });
+}
+
+function showReassignModal(orderId, directionId) {
+  showAssignModal(orderId, directionId, 1);
+  window._reassignMode = true;
+}
+
+function doAssign(orderId) {
+  var driverId = document.getElementById('m-driver').value;
+  if (!driverId) { toast('Выберите водителя'); return; }
+  var pickup = document.getElementById('m-pickup').value.trim();
+  var time = document.getElementById('m-time').value;
+  var body = { driver_id: +driverId, pickup_location: pickup || null, pickup_time_text: time || null };
+  var url = window._reassignMode
+    ? '/api/admin/orders/' + orderId + '/reassign'
+    : '/api/admin/orders/' + orderId + '/assign';
+  window._reassignMode = false;
+  api(url, { method: 'POST', body: JSON.stringify(body) })
+    .then(function() { closeModal(); toast('Готово'); renderOrders(); })
     .catch(function(e) { toast('Ошибка: ' + e.message); });
 }
 
@@ -501,19 +559,6 @@ function doRejectSuggestion(orderId) {
   }).catch(function(e) { toast('Ошибка: ' + e.message); });
 }
 
-function doAssign(orderId) {
-  var driverId = +document.getElementById('m-driver').value;
-  var pickup = document.getElementById('m-pickup').value;
-  var time = document.getElementById('m-time').value;
-  if (!driverId) { toast('Выберите водителя'); return; }
-  api('/api/admin/orders/' + orderId + '/assign', {
-    method: 'POST',
-    body: JSON.stringify({ driver_id: driverId, pickup_location: pickup || null, pickup_time_text: time || null })
-  }).then(function() {
-    closeModal(); toast('Водитель назначен'); renderOrders();
-  }).catch(function(e) { toast('Ошибка: ' + e.message); });
-}
-
 // Drivers
 function renderDrivers() {
   Promise.all([api('/api/admin/drivers'), api('/api/admin/directions')])
@@ -594,6 +639,15 @@ function showEditDriver(driverId) {
   var d = (cache.drivers || []).find(function(x) { return x.id === driverId; });
   if (!d) { toast('Водитель не найден'); return; }
   var html = '<h3>Водитель #' + driverId + '</h3>';
+  html += '<div class="form-group"><label>ФИО</label><input id="ed-name" value="' + (d.full_name || '').replace(/"/g, '&quot;') + '"/></div>';
+  html += '<div class="form-group"><label>Авто</label><input id="ed-car" value="' + (d.car_info || '').replace(/"/g, '&quot;') + '"/></div>';
+  html += '<div class="form-group"><label>Телефон</label><input id="ed-phone" value="' + (d.phone || '').replace(/"/g, '&quot;') + '"/></div>';
+  html += '<div class="form-group"><label>Долг (баланс)</label><input id="ed-bal" type="number" step="0.01" value="' + d.balance + '"/></div>';
+  html += '<div class="form-group"><label>Статус</label><select id="ed-status">';
+  ['active','pending','suspicious','blocked'].forEach(function(s) {
+    html += '<option value="' + s + '"' + (d.status === s ? ' selected' : '') + '>' + s + '</option>';
+  });
+  html += '</select></div>';
   html += '<div class="form-group"><label>Макс. мест</label><input id="ed-max" type="number" value="' + d.max_seats + '"/></div>';
   html += '<div class="form-group"><label>Свои места</label><input id="ed-own" type="number" value="' + d.own_seats_reserved + '"/></div>';
   html += '<div class="form-group"><label>Отдых (часов от сейчас, 0 — снять)</label><input id="ed-rest" type="number" value="0"/></div>';
@@ -604,6 +658,11 @@ function showEditDriver(driverId) {
 function doEditDriver(driverId) {
   var restH = parseInt(document.getElementById('ed-rest').value) || 0;
   var body = {
+    full_name: document.getElementById('ed-name').value.trim() || null,
+    car_info: document.getElementById('ed-car').value.trim() || null,
+    phone: document.getElementById('ed-phone').value.trim() || null,
+    balance: parseFloat(document.getElementById('ed-bal').value) || 0,
+    status: document.getElementById('ed-status').value,
     max_seats: parseInt(document.getElementById('ed-max').value) || 6,
     own_seats_reserved: parseInt(document.getElementById('ed-own').value) || 0
   };
@@ -625,12 +684,26 @@ function showApproveDriver(driverId) {
     seatsChips += '<button class="chip' + (s === 6 ? ' chip-active' : '') + '" onclick="document.getElementById(\'m-seats\').value=' + s + ';_highlightChip(this)">' + s + '</button>';
   }
   var html = '<h3>Подтвердить водителя #' + driverId + '</h3>';
+  html += '<div id="approve-photos" style="margin-bottom:12px">Загрузка фото...</div>';
   html += '<div class="form-group"><label>Направление (необязательно)</label><select id="m-dir">' + opts + '</select></div>';
   html += '<div class="form-group"><label>Макс. мест</label><input id="m-seats" type="number" value="6"/>';
   html += '<div class="chips">' + seatsChips + '</div></div>';
   html += '<div class="actions"><button class="btn btn-success" onclick="doApproveDriver(' + driverId + ')">Подтвердить</button>';
   html += '<button class="btn btn-outline" onclick="closeModal()">Отмена</button></div>';
   openModal(html);
+  api('/api/admin/drivers/' + driverId + '/photos').then(function(photos) {
+    var box = document.getElementById('approve-photos');
+    if (!box) return;
+    if (!photos || photos.length === 0) { box.innerHTML = '<span style="color:var(--muted)">Фото не загружены</span>'; return; }
+    var gal = '';
+    for (var i = 0; i < photos.length; i++) {
+      gal += '<img src="' + photos[i].url + '" style="max-width:45%;margin:4px;border-radius:8px" alt="' + photos[i].kind + '"/>';
+    }
+    box.innerHTML = gal;
+  }).catch(function() {
+    var box = document.getElementById('approve-photos');
+    if (box) box.innerHTML = '';
+  });
 }
 
 function doApproveDriver(driverId) {
@@ -912,10 +985,26 @@ function moveQueue(directionId, index, delta) {
 
 // Proposals
 function renderProposals() {
+  api('/api/admin/reserve-groups').then(function(reserve) {
+    var rhtml = '';
+    if (reserve && reserve.length) {
+      rhtml += '<h3 style="margin:0 0 12px;color:var(--gold)">Резерв маршрутов</h3>';
+      for (var r = 0; r < reserve.length; r++) {
+        var g = reserve[r];
+        rhtml += cardStart(g.from_label + ' → ' + g.to_label, 'reserved');
+        rhtml += row('Водителей', g.drivers_count + ' / ' + g.needed);
+        rhtml += cardEnd();
+      }
+    }
+    _renderProposalsList(rhtml);
+  }).catch(function() { _renderProposalsList(''); });
+}
+
+function _renderProposalsList(reservePrefix) {
   api('/api/admin/proposals/grouped?status=pending').then(function(grouped) {
     var groups = ensureArray(grouped);
-    if (groups.length === 0) { content.innerHTML = '<div class="empty">Нет заявок</div>'; return; }
-    var html = '';
+    var html = reservePrefix || '';
+    if (groups.length === 0 && !html) { content.innerHTML = '<div class="empty">Нет заявок</div>'; return; }
     for (var gi = 0; gi < groups.length; gi++) {
       var g = groups[gi];
       var plist = g.proposals || [];
@@ -935,8 +1024,7 @@ function renderProposals() {
       html += cardEnd();
     }
     content.innerHTML = html;
-  }).catch(function(e) { content.innerHTML = '<div class="empty">Ошибка: ' + e.message + '</div>'; });
-  return;
+  }).catch(function(e) { content.innerHTML = (reservePrefix || '') + '<div class="empty">Ошибка: ' + e.message + '</div>'; });
 }
 function renderProposalsLegacy() {
   api('/api/admin/proposals?status=pending').then(function(data) {

@@ -8,6 +8,7 @@ from aiogram.types import Message, CallbackQuery
 from app.bot import keyboards
 from app.bot.states import (
     DriverRegister, ProposeDirection, DriverCode, DriverRelayChat,
+    DriverLoadingPhoto, DriverTransferRequest,
     DriverOnlineSetup, DriverRest, AdminRelayChat,
 )
 from app.services import commission_service
@@ -203,6 +204,12 @@ async def go_online_own_seats(message: Message, state: FSMContext) -> None:
         await notify_driver_action(message.bot, f"🟢 {dprof.full_name or dprof.id} онлайн, очередь: {d.from_label} → {d.to_label}")
     except Exception:
         pass
+    try:
+        from app.services.scheduler_service import check_underfill_on_direction
+
+        await check_underfill_on_direction(message.bot, d.id)
+    except Exception:
+        pass
 
 
 @router.message(F.text == "🔴 Оффлайн")
@@ -301,12 +308,32 @@ async def accept(cb: CallbackQuery, state: FSMContext) -> None:
         order_service.driver_respond(ass, accept=True)
     except ValueError as e:
         if str(e) == "capacity_exceeded":
+            from app.bot import messages as bot_messages
+            from app.services.admin_notify import notify_sos_overflow
+
+            o = Order.get_by_id(ass.order_id)
+            d = Direction.get_by_id(o.direction_id)
+            await notify_sos_overflow(
+                cb.bot,
+                o.id,
+                seats=o.seats,
+                direction_from=d.from_label,
+                direction_to=d.to_label,
+                from_loc=o.from_location,
+                to_loc=o.to_location,
+            )
+            try:
+                await cb.bot.send_message(
+                    o.passenger.telegram_id, bot_messages.PASSENGER_OVERFLOW_MSG
+                )
+            except Exception:
+                pass
             await cb.answer(
                 "Машина уже полная. Админ переназначит пассажира на другую.",
                 show_alert=True,
             )
             await cb.message.answer(
-                "Не удалось принять: нет свободных мест. Обратитесь к админу.",
+                bot_messages.DRIVER_OVERFLOW_MSG.format(order_id=o.id),
                 reply_markup=keyboards.main_driver_kb(),
             )
         else:
@@ -314,32 +341,29 @@ async def accept(cb: CallbackQuery, state: FSMContext) -> None:
         return
     o = Order.get_by_id(ass.order_id)
     dprof = DriverProfile.get_by_id(ass.driver_id)
-    from app.services.admin_notify import notify_driver_loading
-    qe = (
-        QueueEntry.select()
-        .where(QueueEntry.direction_id == o.direction_id)
-        .order_by(QueueEntry.position)
-        .first()
-    )
-    if qe and qe.driver_id == dprof.id:
-        nxt = queue_service.next_in_queue_after(o.direction_id, qe.position)
-        if nxt:
-            d = Direction.get_by_id(o.direction_id)
-            from app.services import queue_eta_service
+    d = Direction.get_by_id(o.direction_id)
+    from datetime import datetime, timezone
 
-            nxt_slot = queue_eta_service.eta_for_driver(d.id, nxt.id)
-            await notify_driver_loading(
-                cb.bot, nxt.user.telegram_id,
-                dprof.full_name or "Водитель",
-                f"{d.from_label} → {d.to_label}",
-                qe.position + 1,
-                loading_label=nxt_slot.label if nxt_slot else None,
-            )
-    await state.update_data(active_order_id=o.id)
+    from app.services.photo_service import new_loading_session_id
+
+    DriverProfile.update(loading_photos_ok_at=None).where(DriverProfile.id == dprof.id).execute()
+    session_id = new_loading_session_id()
+    await state.update_data(
+        active_order_id=o.id,
+        loading_session_id=session_id,
+        loading_direction_id=o.direction_id,
+    )
+    await state.set_state(DriverLoadingPhoto.waiting)
+    pickup_hint = f"{o.pickup_location or 'уточнит админ'} {o.pickup_time_text or ''}".strip()
+    from app.bot import messages as bot_messages
+
     await cb.message.answer(
-        f"Заказ #{o.id} принят.\n"
-        "Когда посадите пассажира — «▶️ Старт поездки» и код/QR от пассажира.",
-        reply_markup=keyboards.before_trip_kb(),
+        bot_messages.format_driver_on_loading_accept(
+            route=f"{d.from_label} → {d.to_label}",
+            pickup_hint=pickup_hint or "—",
+        )
+        + "\n\n📷 Пришлите 1–3 фото машины (кузов/салон), затем нажмите «Фото готовы».",
+        reply_markup=keyboards.loading_photos_done_kb(),
     )
     await cb.answer()
 
@@ -912,11 +936,11 @@ async def propose_finish(message: Message, state: FSMContext, bot: Bot) -> None:
     ensure_user(message.from_user, prefer_driver=True)
     u = User.get(telegram_id=message.from_user.id)
     dprof = DriverProfile.get(user=u)
-    from app.services import direction_pairs
+    from app.services import reserve_service
 
     comment = None if message.text.strip() == "-" else message.text.strip()
     include_return = data.get("include_return", False)
-    direction_pairs.create_paired_proposals(
+    _, pos, activated = reserve_service.create_reserved_paired_proposals(
         dprof,
         data["from_label"],
         data["to_label"],
@@ -924,6 +948,21 @@ async def propose_finish(message: Message, state: FSMContext, bot: Bot) -> None:
         comment=comment,
         include_return=include_return,
     )
+    lead = (
+        ProposedDirection.select()
+        .where(
+            (ProposedDirection.proposer_id == dprof.id)
+            & (ProposedDirection.from_label == data["from_label"])
+        )
+        .order_by(ProposedDirection.created_at.desc())
+        .first()
+    )
+    if lead:
+        grp = lead.reserve_group_id
+        total = len(reserve_service.unique_proposers_in_group(grp)) if grp else 1
+        await reserve_service.notify_reserve_status(
+            bot, lead, position=pos, total=total, activated=activated,
+        )
     msg = f"Заявка отправлена: {data['from_label']} → {data['to_label']}"
     if include_return:
         msg += f"\n↩ и {data['to_label']} → {data['from_label']}"
@@ -1009,8 +1048,94 @@ async def reg_car(message: Message, state: FSMContext) -> None:
     dprof.car_info = car_info
     dprof.status = DriverStatus.PENDING.value
     dprof.save()
+    await state.set_state(DriverRegister.photo_front)
+    await message.answer("📷 Фото машины спереди:")
+
+
+def _reg_photo_file_id(message: Message) -> str | None:
+    if message.photo:
+        return message.photo[-1].file_id
+    if message.document and (message.document.mime_type or "").startswith("image/"):
+        return message.document.file_id
+    return None
+
+
+async def _reg_photo_step(
+    message: Message,
+    state: FSMContext,
+    *,
+    kind: str,
+    next_state,
+    next_prompt: str,
+    sort_order: int = 0,
+) -> bool:
+    fid = _reg_photo_file_id(message)
+    if not fid:
+        await message.answer("Пришлите фото (изображение).")
+        return False
+    dprof = DriverProfile.get(user=User.get(telegram_id=message.from_user.id))
+    from app.services.photo_service import save_registration_photo
+
+    save_registration_photo(dprof.id, kind, fid, sort_order=sort_order)
+    await state.set_state(next_state)
+    await message.answer(next_prompt)
+    return True
+
+
+@router.message(DriverRegister.photo_front, F.photo | F.document)
+async def reg_photo_front(message: Message, state: FSMContext) -> None:
+    await _reg_photo_step(
+        message, state, kind="front", next_state=DriverRegister.photo_back,
+        next_prompt="📷 Фото сзади:",
+    )
+
+
+@router.message(DriverRegister.photo_back, F.photo | F.document)
+async def reg_photo_back(message: Message, state: FSMContext) -> None:
+    await _reg_photo_step(
+        message, state, kind="back", next_state=DriverRegister.photo_left,
+        next_prompt="📷 Фото слева (бок):",
+    )
+
+
+@router.message(DriverRegister.photo_left, F.photo | F.document)
+async def reg_photo_left(message: Message, state: FSMContext) -> None:
+    await _reg_photo_step(
+        message, state, kind="left", next_state=DriverRegister.photo_right,
+        next_prompt="📷 Фото справа (бок):",
+    )
+
+
+@router.message(DriverRegister.photo_right, F.photo | F.document)
+async def reg_photo_right(message: Message, state: FSMContext) -> None:
+    await _reg_photo_step(
+        message, state, kind="right", next_state=DriverRegister.photo_salon,
+        next_prompt="📷 Фото салона (1):",
+    )
+
+
+@router.message(DriverRegister.photo_salon, F.photo | F.document)
+async def reg_photo_salon(message: Message, state: FSMContext) -> None:
+    await _reg_photo_step(
+        message, state, kind="salon", next_state=DriverRegister.photo_salon_extra,
+        next_prompt="📷 Второе фото салона (или «⏭ Без второго фото салона»):",
+        sort_order=0,
+    )
+
+
+@router.message(DriverRegister.photo_salon_extra, F.text == "⏭ Без второго фото салона")
+async def reg_photo_salon_skip(message: Message, state: FSMContext) -> None:
     await state.set_state(DriverRegister.phone)
-    await message.answer("Номер телефона:")
+    await message.answer("Номер телефона:", reply_markup=keyboards.cancel_kb())
+
+
+@router.message(DriverRegister.photo_salon_extra, F.photo | F.document)
+async def reg_photo_salon_extra(message: Message, state: FSMContext) -> None:
+    if await _reg_photo_step(
+        message, state, kind="salon2", next_state=DriverRegister.phone,
+        next_prompt="Номер телефона:", sort_order=1,
+    ):
+        await message.answer("Номер телефона:", reply_markup=keyboards.cancel_kb())
 
 
 @router.message(DriverRegister.phone, F.text, _NOT_MENU_TEXT)
@@ -1137,3 +1262,98 @@ async def reg_fixed(message: Message, state: FSMContext, bot: Bot) -> None:
 
     await state.clear()
     await message.answer(result, reply_markup=keyboards.main_driver_kb())
+
+
+@router.message(DriverLoadingPhoto.waiting, F.photo | F.document)
+async def loading_photo_upload(message: Message, state: FSMContext) -> None:
+    fid = _reg_photo_file_id(message)
+    if not fid:
+        await message.answer("Пришлите фото.")
+        return
+    data = await state.get_data()
+    dprof = DriverProfile.get(user=User.get(telegram_id=message.from_user.id))
+    from app.services.photo_service import save_loading_photo
+
+    save_loading_photo(
+        dprof.id,
+        int(data.get("loading_direction_id") or dprof.direction_id or 0),
+        data.get("loading_session_id", "default"),
+        fid,
+    )
+    await message.answer("Фото сохранено. Можно отправить ещё или нажать «Фото готовы».")
+
+
+@router.callback_query(F.data == "loading_photos_done")
+async def loading_photos_done(cb: CallbackQuery, state: FSMContext, bot: Bot) -> None:
+    u = User.get(telegram_id=cb.from_user.id)
+    dprof = DriverProfile.get(user=u)
+    from app.services.photo_service import confirm_loading_photos
+    from app.services.loading_notify import broadcast_loading_update
+
+    confirm_loading_photos(dprof)
+    data = await state.get_data()
+    direction_id = data.get("loading_direction_id") or dprof.direction_id
+    if direction_id:
+        await broadcast_loading_update(bot, int(direction_id))
+    await state.set_state(None)
+    await cb.message.answer(
+        "✅ Загрузка опубликована. Пассажиры и очередь уведомлены.\n"
+        "«▶️ Старт поездки» — после посадки и кода/QR.",
+        reply_markup=keyboards.before_trip_kb(),
+    )
+    await cb.answer()
+
+
+@router.message(F.text == "🔄 Передать пассажира админу")
+async def transfer_to_admin_start(message: Message, state: FSMContext) -> None:
+    await state.clear()
+    ensure_user(message.from_user, prefer_driver=True)
+    u = User.get(telegram_id=message.from_user.id)
+    dprof = DriverProfile.get(user=u)
+    rows = list(
+        Order.select()
+        .join(OrderDriverAssignment, on=(OrderDriverAssignment.order_id == Order.id))
+        .where(
+            (OrderDriverAssignment.driver_id == dprof.id)
+            & (OrderDriverAssignment.status == AssignmentStatus.ACCEPTED.value)
+            & (Order.status.in_([OrderStatus.ASSIGNED.value, OrderStatus.IN_PROGRESS.value]))
+        )
+    )
+    if not rows:
+        await message.answer("Нет активных пассажиров для передачи.")
+        return
+    if len(rows) == 1:
+        await state.update_data(transfer_order_id=rows[0].id)
+    else:
+        lines = "\n".join(f"#{o.id}: {o.from_location}" for o in rows)
+        await message.answer(f"Укажите номер заказа в ответе:\n{lines}")
+    await state.set_state(DriverTransferRequest.note)
+    await message.answer("Комментарий для админа (или «-»):")
+
+
+@router.message(DriverTransferRequest.note, F.text, _NOT_MENU_TEXT)
+async def transfer_to_admin_finish(message: Message, state: FSMContext, bot: Bot) -> None:
+    from datetime import datetime, timezone
+
+    from app.services.admin_notify import notify_driver_transfer_request
+
+    data = await state.get_data()
+    note = None if message.text.strip() == "-" else message.text.strip()
+    oid = data.get("transfer_order_id")
+    if not oid and message.text.strip().isdigit():
+        oid = int(message.text.strip())
+    if not oid:
+        await message.answer("Укажите номер заказа.")
+        return
+    o = Order.get_by_id(oid)
+    now = datetime.now(timezone.utc)
+    Order.update(transfer_requested_at=now, transfer_note=note).where(Order.id == o.id).execute()
+    dprof = DriverProfile.get(user=User.get(telegram_id=message.from_user.id))
+    await notify_driver_transfer_request(
+        bot, order_id=o.id, driver_name=dprof.full_name or str(dprof.id), note=note,
+    )
+    await state.clear()
+    await message.answer(
+        "Запрос отправлен администратору. Ожидайте пересадку в другую машину.",
+        reply_markup=keyboards.before_trip_kb(),
+    )

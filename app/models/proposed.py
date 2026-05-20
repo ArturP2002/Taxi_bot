@@ -7,11 +7,13 @@ from peewee import ForeignKeyField, TextField, IntegerField, CharField, DateTime
 from app.models.base import BaseModel
 from app.models.driver import DriverProfile
 from app.models.direction import Direction
+from app.models.reserve import RouteReserveGroup
 from app.util.datetimeutil import utcnow
 
 
 class ProposedStatus(str, enum.Enum):
     PENDING = "pending"
+    RESERVED = "reserved"
     APPROVED = "approved"
     REJECTED = "rejected"
 
@@ -27,6 +29,12 @@ class ProposedDirection(BaseModel):
     fixed_price = DecimalField(max_digits=12, decimal_places=2, default=Decimal("0"))
     comment = TextField(null=True)
     status = CharField(max_length=32, default=ProposedStatus.PENDING.value)
+    reserve_group = ForeignKeyField(
+        RouteReserveGroup,
+        null=True,
+        backref="proposals",
+        on_delete="SET NULL",
+    )
     created_direction = ForeignKeyField(Direction, null=True, backref="from_proposal", on_delete="SET NULL")
     admin_note = TextField(null=True)
     created_at = DateTimeField(default=utcnow)

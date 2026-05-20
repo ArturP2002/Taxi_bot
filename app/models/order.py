@@ -62,6 +62,8 @@ class Order(BaseModel):
     pickup_location = TextField(null=True)
     pickup_time_text = TextField(null=True)
     pickup_surcharge = DecimalField(max_digits=12, decimal_places=2, default=Decimal("0"))
+    transfer_requested_at = DateTimeField(null=True)
+    transfer_note = TextField(null=True)
     created_at = DateTimeField(default=utcnow)
     updated_at = DateTimeField(null=True)
 
