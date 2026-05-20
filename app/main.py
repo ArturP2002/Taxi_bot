@@ -180,6 +180,11 @@ def create_app() -> FastAPI:
             if secret != settings.webhook_secret:
                 return Response(status_code=403)
         data = await request.json()
+        try:
+            update_id = data.get("update_id") if isinstance(data, dict) else None
+            logger.info("Webhook update received: id=%s", update_id)
+        except Exception:
+            pass
         update = Update.model_validate(data, context={"bot": bot})
         await dp.feed_update(bot, update)
         return Response()

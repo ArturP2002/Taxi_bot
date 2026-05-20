@@ -114,6 +114,23 @@ async def finalize_driver_registration(
     dprof.save()
 
     try:
+        from app.db import get_db
+
+        db = get_db()
+        if hasattr(db, "commit") and not getattr(db, "in_transaction", lambda: False)():
+            try:
+                db.commit()
+            except Exception:
+                pass
+        verify = DriverProfile.get_by_id(dprof.id)
+        logger.info(
+            "Driver %s persisted: status=%s full_name=%r phone=%r route=%s→%s",
+            verify.id, verify.status, verify.full_name, verify.phone, route_from, route_to,
+        )
+    except Exception as e:
+        logger.exception("Verify driver save failed for %s: %s", dprof.id, e)
+
+    try:
         await notify_driver_registered(
             bot,
             full_name,

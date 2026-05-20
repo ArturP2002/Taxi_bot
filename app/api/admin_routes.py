@@ -661,6 +661,57 @@ class DriverOut(BaseModel):
     registration_submitted: bool = False
 
 
+@router.get("/_diag")
+def admin_diag() -> Any:
+    """Quick diagnostic for "анкета не падает" — DB path + counts."""
+    from app.db import get_db
+    from app.models import DriverRegistrationPhoto
+
+    db = get_db()
+    try:
+        path = getattr(db, "database", "?")
+    except Exception:
+        path = "?"
+
+    sample = []
+    for d in DriverProfile.select().limit(5):
+        try:
+            u = User.get_by_id(d.user_id)
+            tg = u.telegram_id
+        except Exception:
+            tg = None
+        sample.append({
+            "id": d.id,
+            "telegram_id": tg,
+            "full_name": d.full_name,
+            "status": d.status,
+            "phone": d.phone,
+            "current_city": d.current_city,
+            "tariff_note": d.tariff_note,
+        })
+
+    return {
+        "db_path": str(path),
+        "drivers_total": DriverProfile.select().count(),
+        "drivers_pending": DriverProfile.select().where(
+            DriverProfile.status == DriverStatus.PENDING.value
+        ).count(),
+        "drivers_active": DriverProfile.select().where(
+            DriverProfile.status == DriverStatus.ACTIVE.value
+        ).count(),
+        "users_total": User.select().count(),
+        "proposals_total": ProposedDirection.select().count(),
+        "proposals_pending": ProposedDirection.select().where(
+            ProposedDirection.status == ProposedStatus.PENDING.value
+        ).count(),
+        "proposals_reserved": ProposedDirection.select().where(
+            ProposedDirection.status == ProposedStatus.RESERVED.value
+        ).count(),
+        "registration_photos": DriverRegistrationPhoto.select().count(),
+        "sample_drivers": sample,
+    }
+
+
 @router.get("/drivers", response_model=List[DriverOut])
 def list_drivers() -> Any:
     from app.services import driver_registration, driver_risk_service
