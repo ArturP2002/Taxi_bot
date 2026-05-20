@@ -10,7 +10,6 @@ from aiogram import Bot
 from app.bot import keyboards
 from app.models import DriverProfile, DriverStatus
 from app.services.admin_notify import notify_driver_registered, notify_proposal
-from app.util.datetimeutil import utcnow
 
 logger = logging.getLogger("taxi_bot.driver_registration")
 
@@ -112,7 +111,6 @@ async def finalize_driver_registration(
     dprof.proposed_price_per_seat = price
     dprof.proposed_fixed_price = fixed
     dprof.status = DriverStatus.PENDING.value
-    dprof.registration_submitted_at = utcnow()
     dprof.save()
 
     try:

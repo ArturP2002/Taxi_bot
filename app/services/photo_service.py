@@ -70,8 +70,13 @@ async def send_registration_album_to_admins(bot: Bot, driver_id: int, *, caption
     if not photos:
         await notify_admins(bot, caption)
         return
-    media = [InputMediaPhoto(media=p.file_id) for p in photos[:10]]
-    media[0].caption = caption[:1024]
+    cap = caption[:1024]
+    media: list[InputMediaPhoto] = []
+    for i, p in enumerate(photos[:10]):
+        if i == 0:
+            media.append(InputMediaPhoto(media=p.file_id, caption=cap))
+        else:
+            media.append(InputMediaPhoto(media=p.file_id))
     from app.config import get_settings
 
     settings = get_settings()

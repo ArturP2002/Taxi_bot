@@ -78,8 +78,8 @@
     .driver-photo-item{background:var(--surface2);border:1px solid var(--border);border-radius:8px;overflow:hidden}
     .driver-photo-item img{width:100%;height:100px;object-fit:cover;display:block;cursor:pointer}
     .driver-photo-label{font-size:10px;text-align:center;padding:4px;color:var(--text-dim)}
-    .photo-viewer{display:none;position:fixed;inset:0;z-index:500;background:#000;flex-direction:column;-webkit-tap-highlight-color:transparent}
-    .photo-viewer.visible{display:flex}
+    .photo-viewer{display:none;position:fixed;inset:0;z-index:500;background:#000;flex-direction:column;-webkit-tap-highlight-color:transparent;pointer-events:none;visibility:hidden}
+    .photo-viewer.visible{display:flex;pointer-events:auto;visibility:visible}
     .pv-top{display:flex;align-items:center;justify-content:space-between;padding:12px 14px;padding-top:max(12px,env(safe-area-inset-top));flex-shrink:0}
     .pv-title{font-size:14px;font-weight:600;color:var(--gold)}
     .pv-counter{font-size:12px;color:var(--text-dim)}
@@ -239,6 +239,16 @@ function photoKindLabel(kind) {
   return PHOTO_KIND_LABELS[kind] || kind;
 }
 
+function escapeHtml(s) {
+  return String(s || '').replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
+function isDriverRegistrationComplete(d) {
+  if (d.registration_submitted === true) return true;
+  if (d.registration_submitted === false) return false;
+  return !!(d.phone && d.full_name);
+}
+
 function fetchAuthBlob(path) {
   var headers = { 'Authorization': 'Bearer ' + token, 'ngrok-skip-browser-warning': 'true' };
   return fetch(apiUrl(path, 'GET'), { headers: headers, cache: 'no-store' }).then(function(r) {
@@ -282,8 +292,11 @@ function openPhotoViewer(items, index) {
 
 function closePhotoViewer() {
   var el = document.getElementById('photo-viewer');
+  if (!el) return;
   el.classList.remove('visible');
   el.setAttribute('aria-hidden', 'true');
+  var img = document.getElementById('pv-img');
+  if (img) img.removeAttribute('src');
 }
 
 function pvZoom(delta) {
@@ -304,7 +317,10 @@ function pvNext() {
 }
 
 (function initPhotoViewer() {
-  document.getElementById('pv-close').addEventListener('click', closePhotoViewer);
+  try {
+  var pvClose = document.getElementById('pv-close');
+  if (!pvClose) return;
+  pvClose.addEventListener('click', closePhotoViewer);
   document.getElementById('pv-zoom-in').addEventListener('click', function() { pvZoom(0.35); });
   document.getElementById('pv-zoom-out').addEventListener('click', function() { pvZoom(-0.35); });
   document.getElementById('pv-zoom-reset').addEventListener('click', function() { pvState.scale = 1; pvApplyZoom(); });
@@ -312,6 +328,7 @@ function pvNext() {
   document.getElementById('pv-next').addEventListener('click', pvNext);
   var stage = document.getElementById('pv-stage');
   var img = document.getElementById('pv-img');
+  if (!stage || !img) return;
   var lastTap = 0;
   img.addEventListener('dblclick', function(e) {
     e.preventDefault();
@@ -375,6 +392,9 @@ function pvNext() {
     if (e.key === '+' || e.key === '=') pvZoom(0.35);
     if (e.key === '-') pvZoom(-0.35);
   });
+  } catch (e) {
+    console.warn('photo viewer init failed', e);
+  }
 })();
 
 function bindPhotoThumbs(container, items) {
@@ -394,6 +414,12 @@ function bindPhotoThumbs(container, items) {
 function loadDriverPhotoGallery(driverId, containerId) {
   var container = document.getElementById(containerId);
   if (!container) return;
+  if (container._photoBlobUrls) {
+    for (var u = 0; u < container._photoBlobUrls.length; u++) {
+      try { URL.revokeObjectURL(container._photoBlobUrls[u]); } catch (e) {}
+    }
+  }
+  container._photoBlobUrls = [];
   container.innerHTML = '<div class="driver-photos-title">📷 Фото автомобиля</div><div class="loader" style="padding:12px">Загрузка...</div>';
   api('/api/admin/drivers/' + driverId + '/photos').then(function(photos) {
     photos = ensureArray(photos);
@@ -403,19 +429,23 @@ function loadDriverPhotoGallery(driverId, containerId) {
     }
     return Promise.all(photos.map(function(p) {
       return fetchAuthBlob(p.url).then(function(blob) {
-        return { kind: p.kind, src: URL.createObjectURL(blob) };
+        var src = URL.createObjectURL(blob);
+        container._photoBlobUrls.push(src);
+        return { kind: p.kind, src: src };
       });
     })).then(function(items) {
+      if (!document.getElementById(containerId)) return;
       var html = '<div class="driver-photos-title">📷 Фото автомобиля (' + items.length + ')</div><div class="driver-photos-grid">';
       for (var i = 0; i < items.length; i++) {
         var it = items[i];
-        html += '<div class="driver-photo-item"><img class="js-photo-thumb" src="' + it.src + '" alt="' + photoKindLabel(it.kind) + '"/><div class="driver-photo-label">' + photoKindLabel(it.kind) + '</div></div>';
+        html += '<div class="driver-photo-item"><img class="js-photo-thumb" src="' + escapeHtml(it.src) + '" alt="' + escapeHtml(photoKindLabel(it.kind)) + '"/><div class="driver-photo-label">' + escapeHtml(photoKindLabel(it.kind)) + '</div></div>';
       }
       html += '</div>';
       container.innerHTML = html;
       bindPhotoThumbs(container, items);
     });
   }).catch(function() {
+    if (!document.getElementById(containerId)) return;
     container.innerHTML = '<div class="driver-photos-title">📷 Фото автомобиля</div><span style="color:var(--danger);font-size:12px">Не удалось загрузить фото</span>';
   });
 }
@@ -785,10 +815,10 @@ function renderDrivers() {
       cache.drivers = drivers; cache.directions = directions;
       if (drivers.length === 0) { content.innerHTML = '<div class="empty">Нет водителей</div>'; return; }
       var pendingList = drivers.filter(function(d){
-        return d.status === 'pending' && d.registration_submitted;
+        return d.status === 'pending' && isDriverRegistrationComplete(d);
       });
       var draftList = drivers.filter(function(d){
-        return d.status === 'pending' && !d.registration_submitted;
+        return d.status === 'pending' && !isDriverRegistrationComplete(d);
       });
       var suspiciousList = drivers.filter(function(d){ return d.status === 'suspicious'; });
       var html = '';
@@ -823,7 +853,6 @@ function renderDrivers() {
           if (pd.phone) html += row('Телефон', pd.phone);
           if (pd.car_info) html += row('Авто', pd.car_info);
           html += row('Мест', pd.max_seats + ' (своих: ' + (pd.own_seats_reserved || 0) + ')');
-          html += '<div id="driver-photos-pending-' + pd.id + '" class="driver-photos-section"></div>';
           html += '<div class="actions"><button class="btn btn-outline" onclick="showApproveDriver(' + pd.id + ')">📷 Фото и подтверждение</button>';
           html += '<button class="btn btn-success" onclick="showApproveDriver(' + pd.id + ')">✅ Подтвердить</button></div>';
         }
@@ -847,9 +876,6 @@ function renderDrivers() {
           html += row('30 дн.', 'отказов ' + (d.declines_30d||0) + ', отмен ' + (d.order_cancellations_30d||0) + ', рейсов ' + (d.trips_completed_30d||0));
         }
         if (d.risk_label && d.risk_label !== 'ok') html += row('Риск', d.risk_label);
-        if (d.status === 'pending') {
-          html += '<div id="driver-photos-card-' + d.id + '" class="driver-photos-section"></div>';
-        }
         html += '<div class="actions">';
         if (d.status === 'pending') {
           html += '<button class="btn btn-outline" onclick="showApproveDriver(' + d.id + ')">📷 Фото</button>';
@@ -870,15 +896,10 @@ function renderDrivers() {
         html += '</div>';
         html += cardEnd();
       }
+      if (!pendingList.length && !draftList.length && !suspiciousList.length) {
+        html = '<div class="empty">Нет водителей на проверке. Новые анкеты появятся здесь после завершения регистрации в боте.</div>' + html;
+      }
       content.innerHTML = html;
-      for (var pk = 0; pk < pendingList.length; pk++) {
-        loadDriverPhotoGallery(pendingList[pk].id, 'driver-photos-pending-' + pendingList[pk].id);
-      }
-      for (var pk2 = 0; pk2 < drivers.length; pk2++) {
-        if (drivers[pk2].status === 'pending') {
-          loadDriverPhotoGallery(drivers[pk2].id, 'driver-photos-card-' + drivers[pk2].id);
-        }
-      }
     }).catch(function(e) { content.innerHTML = '<div class="empty">Ошибка: ' + e.message + '</div>'; });
 }
 

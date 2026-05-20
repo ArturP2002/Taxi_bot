@@ -690,13 +690,9 @@ def list_drivers() -> Any:
                 trips_completed_30d=stats["trips_completed"],
                 risk_label=stats["risk_label"],
                 registration_submitted=bool(
-                    getattr(d, "registration_submitted_at", None)
-                    or (
-                        (d.phone or "").strip()
-                        and (d.full_name or "").strip()
-                        and d.proposed_fixed_price is not None
-                        and d.status == DriverStatus.PENDING.value
-                    )
+                    (d.phone or "").strip()
+                    and (d.full_name or "").strip()
+                    and d.status == DriverStatus.PENDING.value
                 ),
             )
         )

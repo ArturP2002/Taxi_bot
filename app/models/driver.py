@@ -38,7 +38,6 @@ class DriverProfile(BaseModel):
         Direction, null=True, backref="drivers_pending_return", on_delete="SET NULL"
     )
     rest_until = DateTimeField(null=True)
-    registration_submitted_at = DateTimeField(null=True)
     created_at = DateTimeField(default=utcnow)
     updated_at = DateTimeField(null=True)
 
