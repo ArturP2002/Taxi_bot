@@ -72,7 +72,13 @@
     .chip{padding:6px 14px;border:1px solid var(--border);border-radius:16px;background:var(--surface2);color:var(--text-dim);font-size:12px;font-weight:500;cursor:pointer;transition:all .15s;-webkit-tap-highlight-color:transparent}
     .chip:active{transform:scale(.93)}
     .chip-active,.chip:hover{background:var(--gold);color:#000;border-color:var(--gold)}
-    @media(max-width:360px){.stats-grid{grid-template-columns:1fr}.tab-btn{padding:7px 10px;font-size:12px}.card{padding:10px}}
+    .driver-photos-section{margin:10px 0 12px}
+    .driver-photos-title{font-size:12px;color:var(--text-dim);margin-bottom:8px;font-weight:600}
+    .driver-photos-grid{display:grid;grid-template-columns:repeat(2,1fr);gap:8px}
+    .driver-photo-item{background:var(--surface2);border:1px solid var(--border);border-radius:8px;overflow:hidden}
+    .driver-photo-item img{width:100%;height:100px;object-fit:cover;display:block;cursor:pointer}
+    .driver-photo-label{font-size:10px;text-align:center;padding:4px;color:var(--text-dim)}
+    @media(max-width:360px){.stats-grid{grid-template-columns:1fr}.tab-btn{padding:7px 10px;font-size:12px}.card{padding:10px}.driver-photos-grid{grid-template-columns:1fr}}
   </style>
 </head>
 <body>
@@ -201,6 +207,48 @@ function auth() {
       statusEl.className = 'err';
       return false;
     });
+}
+
+var PHOTO_KIND_LABELS = { front: 'Спереди', back: 'Сзади', left: 'Слева', right: 'Справа', salon: 'Салон 1', salon2: 'Салон 2' };
+
+function photoKindLabel(kind) {
+  return PHOTO_KIND_LABELS[kind] || kind;
+}
+
+function fetchAuthBlob(path) {
+  var headers = { 'Authorization': 'Bearer ' + token, 'ngrok-skip-browser-warning': 'true' };
+  return fetch(apiUrl(path, 'GET'), { headers: headers, cache: 'no-store' }).then(function(r) {
+    if (!r.ok) throw new Error('photo_load_failed');
+    return r.blob();
+  });
+}
+
+function loadDriverPhotoGallery(driverId, containerId) {
+  var container = document.getElementById(containerId);
+  if (!container) return;
+  container.innerHTML = '<div class="driver-photos-title">📷 Фото автомобиля</div><div class="loader" style="padding:12px">Загрузка...</div>';
+  api('/api/admin/drivers/' + driverId + '/photos').then(function(photos) {
+    photos = ensureArray(photos);
+    if (!photos.length) {
+      container.innerHTML = '<div class="driver-photos-title">📷 Фото автомобиля</div><span style="color:var(--text-dim);font-size:12px">Фото не загружены (водитель регистрировался до обновления или не прислал)</span>';
+      return;
+    }
+    return Promise.all(photos.map(function(p) {
+      return fetchAuthBlob(p.url).then(function(blob) {
+        return { kind: p.kind, src: URL.createObjectURL(blob) };
+      });
+    })).then(function(items) {
+      var html = '<div class="driver-photos-title">📷 Фото автомобиля (' + items.length + ')</div><div class="driver-photos-grid">';
+      for (var i = 0; i < items.length; i++) {
+        var it = items[i];
+        html += '<div class="driver-photo-item"><img src="' + it.src + '" alt="' + photoKindLabel(it.kind) + '" onclick="window.open(this.src)"/><div class="driver-photo-label">' + photoKindLabel(it.kind) + '</div></div>';
+      }
+      html += '</div>';
+      container.innerHTML = html;
+    });
+  }).catch(function() {
+    container.innerHTML = '<div class="driver-photos-title">📷 Фото автомобиля</div><span style="color:var(--danger);font-size:12px">Не удалось загрузить фото</span>';
+  });
 }
 
 function toast(msg) {
@@ -591,7 +639,9 @@ function renderDrivers() {
           if (pd.phone) html += row('Телефон', pd.phone);
           if (pd.car_info) html += row('Авто', pd.car_info);
           html += row('Мест', pd.max_seats + ' (своих: ' + (pd.own_seats_reserved || 0) + ')');
-          html += '<div class="actions"><button class="btn btn-success" onclick="showApproveDriver(' + pd.id + ')">✅ Подтвердить</button></div>';
+          html += '<div id="driver-photos-pending-' + pd.id + '" class="driver-photos-section"></div>';
+          html += '<div class="actions"><button class="btn btn-outline" onclick="showApproveDriver(' + pd.id + ')">📷 Фото и подтверждение</button>';
+          html += '<button class="btn btn-success" onclick="showApproveDriver(' + pd.id + ')">✅ Подтвердить</button></div>';
         }
         html += cardEnd();
       }
@@ -613,8 +663,14 @@ function renderDrivers() {
           html += row('30 дн.', 'отказов ' + (d.declines_30d||0) + ', отмен ' + (d.order_cancellations_30d||0) + ', рейсов ' + (d.trips_completed_30d||0));
         }
         if (d.risk_label && d.risk_label !== 'ok') html += row('Риск', d.risk_label);
+        if (d.status === 'pending') {
+          html += '<div id="driver-photos-card-' + d.id + '" class="driver-photos-section"></div>';
+        }
         html += '<div class="actions">';
-        if (d.status === 'pending') html += '<button class="btn btn-success" onclick="showApproveDriver(' + d.id + ')">Подтвердить</button>';
+        if (d.status === 'pending') {
+          html += '<button class="btn btn-outline" onclick="showApproveDriver(' + d.id + ')">📷 Фото</button>';
+          html += '<button class="btn btn-success" onclick="showApproveDriver(' + d.id + ')">Подтвердить</button>';
+        }
         if (d.status === 'active') {
           html += '<button class="btn btn-gold" onclick="showChangeDirection(' + d.id + ',' + (d.direction_id || 'null') + ')">Направление</button>';
           html += '<button class="btn btn-outline" onclick="showEditDriver(' + d.id + ')">✏️ Параметры</button>';
@@ -631,6 +687,14 @@ function renderDrivers() {
         html += cardEnd();
       }
       content.innerHTML = html;
+      for (var pk = 0; pk < pendingList.length; pk++) {
+        loadDriverPhotoGallery(pendingList[pk].id, 'driver-photos-pending-' + pendingList[pk].id);
+      }
+      for (var pk2 = 0; pk2 < drivers.length; pk2++) {
+        if (drivers[pk2].status === 'pending') {
+          loadDriverPhotoGallery(drivers[pk2].id, 'driver-photos-card-' + drivers[pk2].id);
+        }
+      }
     }).catch(function(e) { content.innerHTML = '<div class="empty">Ошибка: ' + e.message + '</div>'; });
 }
 
@@ -684,26 +748,14 @@ function showApproveDriver(driverId) {
     seatsChips += '<button class="chip' + (s === 6 ? ' chip-active' : '') + '" onclick="document.getElementById(\'m-seats\').value=' + s + ';_highlightChip(this)">' + s + '</button>';
   }
   var html = '<h3>Подтвердить водителя #' + driverId + '</h3>';
-  html += '<div id="approve-photos" style="margin-bottom:12px">Загрузка фото...</div>';
+  html += '<div id="approve-photos" class="driver-photos-section"></div>';
   html += '<div class="form-group"><label>Направление (необязательно)</label><select id="m-dir">' + opts + '</select></div>';
   html += '<div class="form-group"><label>Макс. мест</label><input id="m-seats" type="number" value="6"/>';
   html += '<div class="chips">' + seatsChips + '</div></div>';
   html += '<div class="actions"><button class="btn btn-success" onclick="doApproveDriver(' + driverId + ')">Подтвердить</button>';
   html += '<button class="btn btn-outline" onclick="closeModal()">Отмена</button></div>';
   openModal(html);
-  api('/api/admin/drivers/' + driverId + '/photos').then(function(photos) {
-    var box = document.getElementById('approve-photos');
-    if (!box) return;
-    if (!photos || photos.length === 0) { box.innerHTML = '<span style="color:var(--muted)">Фото не загружены</span>'; return; }
-    var gal = '';
-    for (var i = 0; i < photos.length; i++) {
-      gal += '<img src="' + photos[i].url + '" style="max-width:45%;margin:4px;border-radius:8px" alt="' + photos[i].kind + '"/>';
-    }
-    box.innerHTML = gal;
-  }).catch(function() {
-    var box = document.getElementById('approve-photos');
-    if (box) box.innerHTML = '';
-  });
+  loadDriverPhotoGallery(driverId, 'approve-photos');
 }
 
 function doApproveDriver(driverId) {

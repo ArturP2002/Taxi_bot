@@ -173,7 +173,8 @@ def before_trip_kb() -> ReplyKeyboardMarkup:
 
 def skip_salon_extra_kb() -> ReplyKeyboardMarkup:
     b = ReplyKeyboardBuilder()
-    b.button(text="⏭ Без второго фото салона")
+    b.button(text="⏭️ Без второго фото салона")
+    b.button(text=BTN_CANCEL)
     b.adjust(1)
     return b.as_markup(resize_keyboard=True)
 

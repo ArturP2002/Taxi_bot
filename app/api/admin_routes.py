@@ -3,7 +3,7 @@ from decimal import Decimal
 from typing import Any, List, Optional
 
 from aiogram import Bot
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, ConfigDict
 
 from app.api.deps import require_admin
@@ -1157,26 +1157,42 @@ def driver_registration_photos(driver_id: int) -> Any:
     from app.services.photo_service import list_registration_photos
 
     rows = list_registration_photos(driver_id)
+    from urllib.parse import quote
+
     return [
-        {"kind": p.kind, "file_id": p.file_id, "url": f"/api/admin/telegram-file/{p.file_id}"}
+        {
+            "kind": p.kind,
+            "file_id": p.file_id,
+            "url": f"/api/admin/telegram-file?file_id={quote(p.file_id, safe='')}",
+        }
         for p in rows
     ]
 
 
-@router.get("/telegram-file/{file_id}")
-async def telegram_file_proxy(file_id: str) -> Any:
+@router.get("/telegram-file")
+async def telegram_file_proxy_query(file_id: str = Query(...)) -> Any:
+    return await _telegram_file_response(file_id)
+
+
+@router.get("/telegram-file/{path_file_id}")
+async def telegram_file_proxy_path(path_file_id: str) -> Any:
+    return await _telegram_file_response(path_file_id)
+
+
+async def _telegram_file_response(file_id: str) -> Any:
     import httpx
     from fastapi.responses import Response
 
     from app.config import get_settings as gs
 
+    fid = file_id
     token = gs().bot_token
     if not token:
         raise HTTPException(status_code=503, detail="no_bot_token")
     async with httpx.AsyncClient() as client:
         r = await client.get(
             f"https://api.telegram.org/bot{token}/getFile",
-            params={"file_id": file_id},
+            params={"file_id": fid},
         )
         data = r.json()
         if not data.get("ok"):

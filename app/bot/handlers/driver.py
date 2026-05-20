@@ -1068,6 +1068,7 @@ async def _reg_photo_step(
     next_state,
     next_prompt: str,
     sort_order: int = 0,
+    reply_markup=None,
 ) -> bool:
     fid = _reg_photo_file_id(message)
     if not fid:
@@ -1078,7 +1079,7 @@ async def _reg_photo_step(
 
     save_registration_photo(dprof.id, kind, fid, sort_order=sort_order)
     await state.set_state(next_state)
-    await message.answer(next_prompt)
+    await message.answer(next_prompt, reply_markup=reply_markup)
     return True
 
 
@@ -1118,12 +1119,13 @@ async def reg_photo_right(message: Message, state: FSMContext) -> None:
 async def reg_photo_salon(message: Message, state: FSMContext) -> None:
     await _reg_photo_step(
         message, state, kind="salon", next_state=DriverRegister.photo_salon_extra,
-        next_prompt="📷 Второе фото салона (или «⏭ Без второго фото салона»):",
+        next_prompt="📷 Второе фото салона:",
         sort_order=0,
+        reply_markup=keyboards.skip_salon_extra_kb(),
     )
 
 
-@router.message(DriverRegister.photo_salon_extra, F.text == "⏭ Без второго фото салона")
+@router.message(DriverRegister.photo_salon_extra, F.text == "⏭️ Без второго фото салона")
 async def reg_photo_salon_skip(message: Message, state: FSMContext) -> None:
     await state.set_state(DriverRegister.phone)
     await message.answer("Номер телефона:", reply_markup=keyboards.cancel_kb())
