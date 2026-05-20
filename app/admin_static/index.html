@@ -78,6 +78,16 @@
     .driver-photo-item{background:var(--surface2);border:1px solid var(--border);border-radius:8px;overflow:hidden}
     .driver-photo-item img{width:100%;height:100px;object-fit:cover;display:block;cursor:pointer}
     .driver-photo-label{font-size:10px;text-align:center;padding:4px;color:var(--text-dim)}
+    .photo-viewer{display:none;position:fixed;inset:0;z-index:500;background:#000;flex-direction:column;-webkit-tap-highlight-color:transparent}
+    .photo-viewer.visible{display:flex}
+    .pv-top{display:flex;align-items:center;justify-content:space-between;padding:12px 14px;padding-top:max(12px,env(safe-area-inset-top));flex-shrink:0}
+    .pv-title{font-size:14px;font-weight:600;color:var(--gold)}
+    .pv-counter{font-size:12px;color:var(--text-dim)}
+    .pv-close{width:40px;height:40px;border:none;border-radius:50%;background:rgba(255,255,255,.12);color:#fff;font-size:20px;cursor:pointer}
+    .pv-stage{flex:1;overflow:auto;-webkit-overflow-scrolling:touch;display:flex;align-items:center;justify-content:center;min-height:0;touch-action:pan-x pan-y pinch-zoom}
+    .pv-stage img{max-width:min(100%,100vw);max-height:min(100%,70vh);object-fit:contain;transform-origin:center center;will-change:transform;user-select:none;-webkit-user-drag:none}
+    .pv-toolbar{display:flex;gap:8px;justify-content:center;align-items:center;padding:12px 16px;padding-bottom:max(12px,env(safe-area-inset-bottom));flex-shrink:0;flex-wrap:wrap}
+    .pv-toolbar .btn{min-width:44px;padding:10px 14px}
     @media(max-width:360px){.stats-grid{grid-template-columns:1fr}.tab-btn{padding:7px 10px;font-size:12px}.card{padding:10px}.driver-photos-grid{grid-template-columns:1fr}}
   </style>
 </head>
@@ -100,6 +110,20 @@
   </div>
   <div class="content" id="content"></div>
   <div class="modal-overlay" id="modal-overlay"><div class="modal" id="modal"></div></div>
+  <div class="photo-viewer" id="photo-viewer" aria-hidden="true">
+    <div class="pv-top">
+      <div><div class="pv-title" id="pv-label">Фото</div><div class="pv-counter" id="pv-counter"></div></div>
+      <button type="button" class="pv-close" id="pv-close" aria-label="Закрыть">✕</button>
+    </div>
+    <div class="pv-stage" id="pv-stage"><img id="pv-img" alt=""/></div>
+    <div class="pv-toolbar">
+      <button type="button" class="btn btn-outline" id="pv-zoom-out">−</button>
+      <button type="button" class="btn btn-outline" id="pv-zoom-reset">100%</button>
+      <button type="button" class="btn btn-outline" id="pv-zoom-in">+</button>
+      <button type="button" class="btn btn-gold" id="pv-prev">◀</button>
+      <button type="button" class="btn btn-gold" id="pv-next">▶</button>
+    </div>
+  </div>
   <div class="toast" id="toast"></div>
 <script>
 var tg = window.Telegram.WebApp;
@@ -223,6 +247,150 @@ function fetchAuthBlob(path) {
   });
 }
 
+var pvState = { items: [], index: 0, scale: 1 };
+
+function pvApplyZoom() {
+  var img = document.getElementById('pv-img');
+  if (img) img.style.transform = 'scale(' + pvState.scale + ')';
+  var resetBtn = document.getElementById('pv-zoom-reset');
+  if (resetBtn) resetBtn.textContent = Math.round(pvState.scale * 100) + '%';
+}
+
+function pvRenderImage() {
+  if (!pvState.items.length) return;
+  var it = pvState.items[pvState.index];
+  var img = document.getElementById('pv-img');
+  var stage = document.getElementById('pv-stage');
+  img.src = it.src;
+  img.alt = photoKindLabel(it.kind);
+  document.getElementById('pv-label').textContent = photoKindLabel(it.kind);
+  document.getElementById('pv-counter').textContent = (pvState.index + 1) + ' / ' + pvState.items.length;
+  pvState.scale = 1;
+  pvApplyZoom();
+  if (stage) stage.scrollTop = 0;
+}
+
+function openPhotoViewer(items, index) {
+  if (!items || !items.length) return;
+  pvState.items = items;
+  pvState.index = Math.max(0, Math.min(index || 0, items.length - 1));
+  pvRenderImage();
+  var el = document.getElementById('photo-viewer');
+  el.classList.add('visible');
+  el.setAttribute('aria-hidden', 'false');
+}
+
+function closePhotoViewer() {
+  var el = document.getElementById('photo-viewer');
+  el.classList.remove('visible');
+  el.setAttribute('aria-hidden', 'true');
+}
+
+function pvZoom(delta) {
+  pvState.scale = Math.min(5, Math.max(0.5, +(pvState.scale + delta).toFixed(2)));
+  pvApplyZoom();
+}
+
+function pvPrev() {
+  if (pvState.items.length < 2) return;
+  pvState.index = (pvState.index - 1 + pvState.items.length) % pvState.items.length;
+  pvRenderImage();
+}
+
+function pvNext() {
+  if (pvState.items.length < 2) return;
+  pvState.index = (pvState.index + 1) % pvState.items.length;
+  pvRenderImage();
+}
+
+(function initPhotoViewer() {
+  document.getElementById('pv-close').addEventListener('click', closePhotoViewer);
+  document.getElementById('pv-zoom-in').addEventListener('click', function() { pvZoom(0.35); });
+  document.getElementById('pv-zoom-out').addEventListener('click', function() { pvZoom(-0.35); });
+  document.getElementById('pv-zoom-reset').addEventListener('click', function() { pvState.scale = 1; pvApplyZoom(); });
+  document.getElementById('pv-prev').addEventListener('click', pvPrev);
+  document.getElementById('pv-next').addEventListener('click', pvNext);
+  var stage = document.getElementById('pv-stage');
+  var img = document.getElementById('pv-img');
+  var lastTap = 0;
+  img.addEventListener('dblclick', function(e) {
+    e.preventDefault();
+    if (pvState.scale > 1.1) { pvState.scale = 1; } else { pvState.scale = 2.5; }
+    pvApplyZoom();
+  });
+  stage.addEventListener('click', function(e) {
+    if (e.target === stage) closePhotoViewer();
+  });
+  var touchStartDist = 0;
+  var touchStartScale = 1;
+  var swipeX = null;
+  stage.addEventListener('touchstart', function(e) {
+    if (e.touches.length === 2) {
+      touchStartDist = Math.hypot(
+        e.touches[0].clientX - e.touches[1].clientX,
+        e.touches[0].clientY - e.touches[1].clientY
+      );
+      touchStartScale = pvState.scale;
+      swipeX = null;
+    } else if (e.touches.length === 1) {
+      swipeX = e.touches[0].clientX;
+      var now = Date.now();
+      if (now - lastTap < 300) {
+        if (pvState.scale > 1.1) { pvState.scale = 1; } else { pvState.scale = 2.5; }
+        pvApplyZoom();
+      }
+      lastTap = now;
+    }
+  }, { passive: true });
+  stage.addEventListener('touchmove', function(e) {
+    if (e.touches.length !== 2 || !touchStartDist) return;
+    var dist = Math.hypot(
+      e.touches[0].clientX - e.touches[1].clientX,
+      e.touches[0].clientY - e.touches[1].clientY
+    );
+    pvState.scale = Math.min(5, Math.max(0.5, touchStartScale * (dist / touchStartDist)));
+    pvApplyZoom();
+  }, { passive: true });
+  stage.addEventListener('touchend', function(e) {
+    if (swipeX != null && e.changedTouches.length && touchStartDist === 0) {
+      var dx = e.changedTouches[0].clientX - swipeX;
+      if (Math.abs(dx) >= 60 && pvState.scale <= 1.2) {
+        if (dx < 0) pvNext(); else pvPrev();
+      }
+    }
+    swipeX = null;
+    touchStartDist = 0;
+  });
+  stage.addEventListener('wheel', function(e) {
+    if (!document.getElementById('photo-viewer').classList.contains('visible')) return;
+    e.preventDefault();
+    pvZoom(e.deltaY < 0 ? 0.2 : -0.2);
+  }, { passive: false });
+  document.addEventListener('keydown', function(e) {
+    var viewer = document.getElementById('photo-viewer');
+    if (!viewer.classList.contains('visible')) return;
+    if (e.key === 'Escape') closePhotoViewer();
+    if (e.key === 'ArrowLeft') pvPrev();
+    if (e.key === 'ArrowRight') pvNext();
+    if (e.key === '+' || e.key === '=') pvZoom(0.35);
+    if (e.key === '-') pvZoom(-0.35);
+  });
+})();
+
+function bindPhotoThumbs(container, items) {
+  container._photoItems = items;
+  var thumbs = container.querySelectorAll('.js-photo-thumb');
+  for (var i = 0; i < thumbs.length; i++) {
+    (function(idx) {
+      thumbs[idx].addEventListener('click', function(e) {
+        e.preventDefault();
+        e.stopPropagation();
+        openPhotoViewer(container._photoItems, idx);
+      });
+    })(i);
+  }
+}
+
 function loadDriverPhotoGallery(driverId, containerId) {
   var container = document.getElementById(containerId);
   if (!container) return;
@@ -241,10 +409,11 @@ function loadDriverPhotoGallery(driverId, containerId) {
       var html = '<div class="driver-photos-title">📷 Фото автомобиля (' + items.length + ')</div><div class="driver-photos-grid">';
       for (var i = 0; i < items.length; i++) {
         var it = items[i];
-        html += '<div class="driver-photo-item"><img src="' + it.src + '" alt="' + photoKindLabel(it.kind) + '" onclick="window.open(this.src)"/><div class="driver-photo-label">' + photoKindLabel(it.kind) + '</div></div>';
+        html += '<div class="driver-photo-item"><img class="js-photo-thumb" src="' + it.src + '" alt="' + photoKindLabel(it.kind) + '"/><div class="driver-photo-label">' + photoKindLabel(it.kind) + '</div></div>';
       }
       html += '</div>';
       container.innerHTML = html;
+      bindPhotoThumbs(container, items);
     });
   }).catch(function() {
     container.innerHTML = '<div class="driver-photos-title">📷 Фото автомобиля</div><span style="color:var(--danger);font-size:12px">Не удалось загрузить фото</span>';
