@@ -92,6 +92,12 @@ MIGRATIONS: list[tuple[str, list[str]]] = [
             )""",
         ],
     ),
+    (
+        "20260520_v6",
+        [
+            "ALTER TABLE driver_profiles ADD COLUMN registration_submitted_at TEXT",
+        ],
+    ),
 ]
 
 

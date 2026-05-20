@@ -658,6 +658,7 @@ class DriverOut(BaseModel):
     order_cancellations_30d: int = 0
     trips_completed_30d: int = 0
     risk_label: str = "ok"
+    registration_submitted: bool = False
 
 
 @router.get("/drivers", response_model=List[DriverOut])
@@ -688,6 +689,15 @@ def list_drivers() -> Any:
                 order_cancellations_30d=stats["order_cancellations"],
                 trips_completed_30d=stats["trips_completed"],
                 risk_label=stats["risk_label"],
+                registration_submitted=bool(
+                    getattr(d, "registration_submitted_at", None)
+                    or (
+                        (d.phone or "").strip()
+                        and (d.full_name or "").strip()
+                        and d.proposed_fixed_price is not None
+                        and d.status == DriverStatus.PENDING.value
+                    )
+                ),
             )
         )
     return out
@@ -1088,10 +1098,14 @@ class ProposalOut(BaseModel):
 
 
 @router.get("/proposals", response_model=List[ProposalOut])
-def list_proposals(status: Optional[str] = ProposedStatus.PENDING.value) -> Any:
+def list_proposals(status: Optional[str] = "pending,reserved") -> Any:
     q = ProposedDirection.select().order_by(ProposedDirection.created_at).limit(100)
     if status:
-        q = q.where(ProposedDirection.status == status)
+        statuses = [s.strip() for s in status.split(",") if s.strip()]
+        if len(statuses) == 1:
+            q = q.where(ProposedDirection.status == statuses[0])
+        elif statuses:
+            q = q.where(ProposedDirection.status.in_(statuses))
     out: List[ProposalOut] = []
     for p in q:
         drv = DriverProfile.get_by_id(p.proposer_id)
@@ -1117,10 +1131,14 @@ def _proposal_pair_key(from_label: str, to_label: str) -> str:
 
 
 @router.get("/proposals/grouped")
-def list_proposals_grouped(status: Optional[str] = ProposedStatus.PENDING.value) -> Any:
+def list_proposals_grouped(status: Optional[str] = "pending,reserved") -> Any:
     q = ProposedDirection.select().order_by(ProposedDirection.created_at).limit(200)
     if status:
-        q = q.where(ProposedDirection.status == status)
+        statuses = [s.strip() for s in status.split(",") if s.strip()]
+        if len(statuses) == 1:
+            q = q.where(ProposedDirection.status == statuses[0])
+        elif statuses:
+            q = q.where(ProposedDirection.status.in_(statuses))
     groups: dict[str, list] = {}
     for p in q:
         drv = DriverProfile.get_by_id(p.proposer_id)
@@ -1212,6 +1230,14 @@ def list_reserve_groups() -> Any:
         RouteReserveGroup.status == ReserveGroupStatus.COLLECTING.value
     ):
         drivers = reserve_service.unique_proposers_in_group(g.id)
+        driver_items = [
+            {
+                "id": drv.id,
+                "full_name": drv.full_name or f"ID:{drv.id}",
+                "phone": drv.phone,
+            }
+            for drv in drivers
+        ]
         out.append({
             "id": g.id,
             "route_key": g.route_key,
@@ -1219,7 +1245,7 @@ def list_reserve_groups() -> Any:
             "to_label": g.to_label,
             "drivers_count": len(drivers),
             "needed": get_settings().route_reserve_min_drivers,
-            "drivers": [{"id": d.id, "name": d.full_name} for d in drivers],
+            "drivers": driver_items,
         })
     return out
 

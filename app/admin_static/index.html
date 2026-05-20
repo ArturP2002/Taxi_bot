@@ -784,7 +784,12 @@ function renderDrivers() {
       var directions = ensureArray(results[1]);
       cache.drivers = drivers; cache.directions = directions;
       if (drivers.length === 0) { content.innerHTML = '<div class="empty">Нет водителей</div>'; return; }
-      var pendingList = drivers.filter(function(d){ return d.status === 'pending'; });
+      var pendingList = drivers.filter(function(d){
+        return d.status === 'pending' && d.registration_submitted;
+      });
+      var draftList = drivers.filter(function(d){
+        return d.status === 'pending' && !d.registration_submitted;
+      });
       var suspiciousList = drivers.filter(function(d){ return d.status === 'suspicious'; });
       var html = '';
       if (suspiciousList.length > 0) {
@@ -796,6 +801,16 @@ function renderDrivers() {
           html += row('Риск', sd.risk_label || '—');
           html += '<div class="actions"><button class="btn btn-success" onclick="clearSuspicious(' + sd.id + ')">Снять проверку</button>';
           html += '<button class="btn btn-danger" onclick="blockDriver(' + sd.id + ')">Заблокировать</button></div>';
+        }
+        html += cardEnd();
+      }
+      if (draftList.length > 0) {
+        html += cardStart('📝 Незавершённые анкеты (' + draftList.length + ')', 'awaiting_admin');
+        for (var di = 0; di < draftList.length; di++) {
+          var dd = draftList[di];
+          html += row(dd.full_name || 'ID:' + dd.id, 'TG ' + dd.telegram_id);
+          if (dd.draft_route) html += row('Маршрут', dd.draft_route);
+          html += row('Статус', 'водитель ещё заполняет форму в боте');
         }
         html += cardEnd();
       }
@@ -1214,6 +1229,12 @@ function renderProposals() {
         var g = reserve[r];
         rhtml += cardStart(g.from_label + ' → ' + g.to_label, 'reserved');
         rhtml += row('Водителей', g.drivers_count + ' / ' + g.needed);
+        if (g.drivers && g.drivers.length) {
+          for (var rd = 0; rd < g.drivers.length; rd++) {
+            var gd = g.drivers[rd];
+            rhtml += row((rd + 1) + '. ' + (gd.full_name || gd.name || 'ID:' + gd.id), gd.phone || '—');
+          }
+        }
         rhtml += cardEnd();
       }
     }
@@ -1222,7 +1243,7 @@ function renderProposals() {
 }
 
 function _renderProposalsList(reservePrefix) {
-  api('/api/admin/proposals/grouped?status=pending').then(function(grouped) {
+  api('/api/admin/proposals/grouped?status=pending,reserved').then(function(grouped) {
     var groups = ensureArray(grouped);
     var html = reservePrefix || '';
     if (groups.length === 0 && !html) { content.innerHTML = '<div class="empty">Нет заявок</div>'; return; }
@@ -1236,6 +1257,8 @@ function _renderProposalsList(reservePrefix) {
       for (var i = 0; i < plist.length; i++) {
         var p = plist[i];
         html += row((i+1) + '. ' + (p.proposer_name || 'ID:'+p.proposer_id), p.from_label + ' → ' + p.to_label);
+        if (p.status === 'reserved') html += row('Статус', 'в резерве маршрута');
+        else if (p.status && p.status !== 'pending') html += row('Статус', statusLabel(p.status));
         html += row('Тариф', p.price_per_seat + ' + ' + p.fixed_price);
         html += '<div class="actions">';
         html += '<button class="btn btn-success" onclick="approveProposal(' + p.id + ')">✅ Одобрить</button>';

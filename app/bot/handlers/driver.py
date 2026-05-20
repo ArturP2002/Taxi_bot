@@ -958,7 +958,7 @@ async def propose_finish(message: Message, state: FSMContext, bot: Bot) -> None:
         .first()
     )
     if lead:
-        grp = lead.reserve_group_id
+        grp = getattr(lead, "reserve_group_id", None)
         total = len(reserve_service.unique_proposers_in_group(grp)) if grp else 1
         await reserve_service.notify_reserve_status(
             bot, lead, position=pos, total=total, activated=activated,
@@ -1129,6 +1129,14 @@ async def reg_photo_salon(message: Message, state: FSMContext) -> None:
 async def reg_photo_salon_skip(message: Message, state: FSMContext) -> None:
     await state.set_state(DriverRegister.phone)
     await message.answer("Номер телефона:", reply_markup=keyboards.cancel_kb())
+
+
+@router.message(DriverRegister.photo_salon_extra, F.text, _NOT_MENU_TEXT)
+async def reg_photo_salon_extra_hint(message: Message) -> None:
+    await message.answer(
+        "Пришлите второе фото салона или нажмите «⏭️ Без второго фото салона».",
+        reply_markup=keyboards.skip_salon_extra_kb(),
+    )
 
 
 @router.message(DriverRegister.photo_salon_extra, F.photo | F.document)

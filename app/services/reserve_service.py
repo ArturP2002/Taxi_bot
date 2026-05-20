@@ -9,6 +9,7 @@ from typing import List, Optional, Tuple
 from aiogram import Bot
 
 from app.config import get_settings
+from app.db import get_db
 from app.models import (
     DriverProfile,
     ProposedDirection,
@@ -23,6 +24,18 @@ logger = logging.getLogger("taxi_bot.reserve")
 
 def route_key(from_label: str, to_label: str) -> str:
     return f"{normalize_route_label(from_label)}|{normalize_route_label(to_label)}"
+
+
+def reserve_schema_ok() -> bool:
+    """True if reserve tables/columns exist (migration v5 applied)."""
+    try:
+        db = get_db()
+        db.execute_sql("SELECT 1 FROM route_reserve_groups LIMIT 1")
+        cur = db.execute_sql("PRAGMA table_info(proposed_directions)")
+        cols = {row[1] for row in cur.fetchall()}
+        return "reserve_group_id" in cols
+    except Exception:
+        return False
 
 
 def get_or_create_group(from_label: str, to_label: str) -> RouteReserveGroup:
@@ -188,13 +201,30 @@ async def notify_reserve_status(
         )
 
 
+def create_paired_proposals_pending(
+    proposer: DriverProfile,
+    from_label: str,
+    to_label: str,
+    **kwargs,
+) -> Tuple[List[ProposedDirection], int, bool]:
+    """Create paired proposals without reserve (visible in admin as pending)."""
+    from app.services.direction_pairs import create_paired_proposals
+
+    created = create_paired_proposals(proposer, from_label, to_label, **kwargs)
+    return created, 1, False
+
+
 def create_reserved_paired_proposals(
     proposer: DriverProfile,
     from_label: str,
     to_label: str,
     **kwargs,
 ) -> Tuple[List[ProposedDirection], int, bool]:
-    """Like create_paired_proposals but through reserve flow."""
+    """Like create_paired_proposals but through reserve flow; falls back to pending on error."""
+    if not reserve_schema_ok():
+        logger.warning("reserve schema missing — creating pending proposals only")
+        return create_paired_proposals_pending(proposer, from_label, to_label, **kwargs)
+
     from app.services.direction_pairs import create_paired_proposals
 
     existing = (
@@ -216,19 +246,39 @@ def create_reserved_paired_proposals(
                 estimated_time_min=kwargs.get("estimated_time_min", p.estimated_time_min),
                 comment=kwargs.get("comment", p.comment),
             ).where(ProposedDirection.id == p.id).execute()
-            grp, pos, activated = add_proposal_to_reserve(ProposedDirection.get_by_id(p.id))
-            return [ProposedDirection.get_by_id(p.id)], pos, activated
+            try:
+                grp, pos, activated = add_proposal_to_reserve(
+                    ProposedDirection.get_by_id(p.id)
+                )
+                return [ProposedDirection.get_by_id(p.id)], pos, activated
+            except Exception as e:
+                logger.exception("add_proposal_to_reserve failed: %s", e)
+                ProposedDirection.update(
+                    status=ProposedStatus.PENDING.value,
+                    reserve_group=None,
+                ).where(ProposedDirection.id == p.id).execute()
+                return [ProposedDirection.get_by_id(p.id)], 1, False
 
-    created = create_paired_proposals(proposer, from_label, to_label, **kwargs)
-    out: List[ProposedDirection] = []
-    pos, activated = 1, False
-    for p in created:
-        if normalize_route_label(p.from_label) == nf and normalize_route_label(p.to_label) == nt:
-            ProposedDirection.update(status=ProposedStatus.RESERVED.value).where(
-                ProposedDirection.id == p.id
-            ).execute()
-            _, pos, activated = add_proposal_to_reserve(ProposedDirection.get_by_id(p.id))
-            out.append(ProposedDirection.get_by_id(p.id))
-        else:
-            out.append(p)
-    return out, pos, activated
+    try:
+        created = create_paired_proposals(proposer, from_label, to_label, **kwargs)
+        out: List[ProposedDirection] = []
+        pos, activated = 1, False
+        for p in created:
+            if (
+                normalize_route_label(p.from_label) == nf
+                and normalize_route_label(p.to_label) == nt
+            ):
+                try:
+                    _, pos, activated = add_proposal_to_reserve(
+                        ProposedDirection.get_by_id(p.id)
+                    )
+                    out.append(ProposedDirection.get_by_id(p.id))
+                except Exception as e:
+                    logger.exception("reserve attach failed for proposal %s: %s", p.id, e)
+                    out.append(p)
+            else:
+                out.append(p)
+        return out, pos, activated
+    except Exception as e:
+        logger.exception("create_reserved_paired_proposals failed: %s", e)
+        return create_paired_proposals_pending(proposer, from_label, to_label, **kwargs)

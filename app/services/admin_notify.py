@@ -107,7 +107,11 @@ async def notify_driver_registered(
         text += f"Мест: {max_seats}\n"
     if tariff:
         text += f"Тариф: {tariff}\n"
-    text += "\nОткройте админку → вкладка «Водители» → «Подтвердить»."
+    text += (
+        "\nОткройте админку:\n"
+        "• «Водители» — подтвердить анкету и фото\n"
+        "• «Заявки» — маршрут (ожидает / в резерве)"
+    )
     await notify_admins(bot, text)
 
 

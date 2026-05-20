@@ -10,6 +10,7 @@ from aiogram import Bot
 from app.bot import keyboards
 from app.models import DriverProfile, DriverStatus
 from app.services.admin_notify import notify_driver_registered, notify_proposal
+from app.util.datetimeutil import utcnow
 
 logger = logging.getLogger("taxi_bot.driver_registration")
 
@@ -111,7 +112,23 @@ async def finalize_driver_registration(
     dprof.proposed_price_per_seat = price
     dprof.proposed_fixed_price = fixed
     dprof.status = DriverStatus.PENDING.value
+    dprof.registration_submitted_at = utcnow()
     dprof.save()
+
+    try:
+        await notify_driver_registered(
+            bot,
+            full_name,
+            telegram_id,
+            driver_id=dprof.id,
+            route=f"{route_from} → {route_to}",
+            max_seats=max_seats,
+            tariff=f"{price}/{fixed}",
+            car_info=car_info,
+            phone=phone,
+        )
+    except Exception as e:
+        logger.warning("Admin notify failed for driver %s: %s", dprof.id, e)
 
     proposal_error: Optional[str] = None
     try:
@@ -128,27 +145,15 @@ async def finalize_driver_registration(
             comment=f"Анкета: {car_info}" if car_info else "Анкета водителя",
             include_return=include_return,
         )
+        try:
+            await notify_proposal(
+                bot, route_from, route_to, full_name, paired=include_return,
+            )
+        except Exception as e:
+            logger.warning("Proposal notify failed for driver %s: %s", dprof.id, e)
     except Exception as e:
         logger.exception("create_paired_proposals failed for driver %s: %s", dprof.id, e)
         proposal_error = str(e)
-
-    try:
-        await notify_driver_registered(
-            bot,
-            full_name,
-            telegram_id,
-            driver_id=dprof.id,
-            route=f"{route_from} → {route_to}",
-            max_seats=max_seats,
-            tariff=f"{price}/{fixed}",
-            car_info=car_info,
-            phone=phone,
-        )
-        await notify_proposal(
-            bot, route_from, route_to, full_name, paired=include_return,
-        )
-    except Exception as e:
-        logger.warning("Admin notify failed for driver %s: %s", dprof.id, e)
 
     from app.bot.messages import DRIVER_LAUNCH_MESSAGE
     from app.services.photo_service import send_registration_album_to_admins

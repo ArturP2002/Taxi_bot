@@ -13,7 +13,10 @@ def approve_proposal(
     actor_telegram_id: int,
     reverse_direction_id: Optional[int] = None,
 ) -> Direction:
-    if proposal.status != ProposedStatus.PENDING.value:
+    if proposal.status not in (
+        ProposedStatus.PENDING.value,
+        ProposedStatus.RESERVED.value,
+    ):
         raise ValueError("not_pending")
     now = datetime.now(timezone.utc)
     price_seat = Decimal(str(getattr(proposal, "price_per_seat", 0) or 0))
@@ -38,7 +41,11 @@ def approve_proposal(
     nt = normalize_route_label(proposal.to_label)
     others = list(
         ProposedDirection.select()
-        .where(ProposedDirection.status == ProposedStatus.PENDING.value)
+        .where(
+            ProposedDirection.status.in_(
+                [ProposedStatus.PENDING.value, ProposedStatus.RESERVED.value]
+            )
+        )
         .order_by(ProposedDirection.created_at)
     )
     merged: list[ProposedDirection] = [proposal]
