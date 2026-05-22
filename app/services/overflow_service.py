@@ -61,13 +61,12 @@ def order_fits_any_driver(order: Order, *, excluded: Optional[set[int]] = None) 
 
 
 def order_has_overflow(order: Order, *, excluded: Optional[set[int]] = None) -> bool:
-    """True when no single car can take the whole order."""
+    """
+    True when the order needs more seats than any single car can offer (перебор).
+    Does not depend on auto-assign: 5 мест при max 5 в машине — не SOS.
+    """
     info = direction_capacity_info(order.direction_id, excluded_driver_ids=excluded)
-    if order.seats <= info.max_single_car_seats and order_fits_any_driver(order, excluded=excluded):
-        return False
-    if info.max_single_car_seats >= order.seats and order_fits_any_driver(order, excluded=excluded):
-        return False
-    return True
+    return order.seats > info.max_single_car_seats
 
 
 def mark_order_overflow_review(order: Order) -> None:

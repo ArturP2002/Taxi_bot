@@ -219,6 +219,28 @@ def _validate_boarding_code(
     return True, "ok"
 
 
+def find_order_for_driver_boarding_code(
+    driver_id: int, raw: str
+) -> Optional[Order]:
+    """Match 6-digit code against this driver's accepted (not yet boarded) orders."""
+    code = code_service.normalize_boarding_code(raw)
+    if not code:
+        return None
+    matches: List[Order] = []
+    for o in driver_accepted_orders(
+        DriverProfile.get_by_id(driver_id), assigned_only=True
+    ):
+        if o.code_consumed_at:
+            continue
+        if code_service.verify_code(o.id, code, o.confirmation_code_hash):
+            matches.append(o)
+    if len(matches) == 1:
+        return matches[0]
+    if len(matches) > 1:
+        return matches[0]
+    return None
+
+
 def driver_accepted_orders(driver: DriverProfile, *, assigned_only: bool = False) -> List[Order]:
     statuses = [OrderStatus.ASSIGNED.value]
     if not assigned_only:

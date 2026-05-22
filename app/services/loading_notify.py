@@ -33,8 +33,10 @@ async def broadcast_loading_update(
     direction_id: int,
     *,
     trigger_order_id: Optional[int] = None,
+    loading_session_id: Optional[str] = None,
 ) -> None:
     direction = Direction.get_by_id(direction_id)
+    route_label = f"{direction.from_label} → {direction.to_label}"
 
     for snap in loading_service.drivers_loading_on_direction(direction_id):
         drv = DriverProfile.get_by_id(snap.driver_id)
@@ -86,6 +88,26 @@ async def broadcast_loading_update(
             await bot.send_message(pu.telegram_id, text)
         except Exception as e:
             logger.warning("loading notify passenger order %s: %s", o.id, e)
+
+    loading_drv = loading_service.drivers_loading_on_direction(direction_id)
+    if loading_drv:
+        from app.services.photo_service import send_car_photos_to_passengers
+
+        drv = DriverProfile.get_by_id(loading_drv[0].driver_id)
+        if getattr(drv, "loading_photos_ok_at", None):
+            n = await send_car_photos_to_passengers(
+                bot,
+                drv,
+                direction_id,
+                session_id=loading_session_id,
+                route_label=route_label,
+            )
+            if n:
+                logger.info(
+                    "Sent loading car photos to %s passengers (driver %s)",
+                    n,
+                    drv.id,
+                )
 
     qe = (
         QueueEntry.select()

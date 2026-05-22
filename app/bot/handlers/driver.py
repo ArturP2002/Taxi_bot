@@ -663,23 +663,30 @@ async def enter_code(message: Message, state: FSMContext, bot: Bot) -> None:
     u = User.get(telegram_id=message.from_user.id)
     dprof = DriverProfile.get(user=u)
     data = await state.get_data()
+    raw = message.text.strip()
     parsed = code_service.parse_verification_raw(
-        message.text.strip(),
+        raw,
         default_order_id=data.get("active_order_id"),
     )
-    if not parsed:
-        await message.answer(code_service.verification_error_label("invalid_format"))
-        return
-    try:
-        o = Order.get_by_id(parsed.order_id)
-    except Order.DoesNotExist:
-        await message.answer("Заказ не найден.")
-        return
+    if parsed:
+        try:
+            o = Order.get_by_id(parsed.order_id)
+        except Order.DoesNotExist:
+            await message.answer("Заказ не найден.")
+            return
+    else:
+        o = order_service.find_order_for_driver_boarding_code(dprof.id, raw)
+        if not o:
+            await message.answer(
+                "Код не найден среди ваших пассажиров на посадку.\n"
+                "Проверьте 6 цифр или отсканируйте QR."
+            )
+            return
     ok, key = order_service.verify_passenger_boarding(
         o,
-        message.text.strip(),
+        raw,
         driver_id=dprof.id,
-        expected_order_id=parsed.order_id,
+        expected_order_id=o.id,
     )
     if not ok:
         await message.answer(code_service.verification_error_label(key))
@@ -748,14 +755,17 @@ async def enter_code_photo(message: Message, state: FSMContext, bot: Bot) -> Non
     last_err = "invalid_format"
     for raw in payloads:
         parsed = code_service.parse_verification_raw(raw)
-        if not parsed:
-            continue
-        try:
-            o = Order.get_by_id(parsed.order_id)
-        except Order.DoesNotExist:
-            continue
+        if parsed:
+            try:
+                o = Order.get_by_id(parsed.order_id)
+            except Order.DoesNotExist:
+                continue
+        else:
+            o = order_service.find_order_for_driver_boarding_code(dprof.id, raw)
+            if not o:
+                continue
         ok, key = order_service.verify_passenger_boarding(
-            o, raw, driver_id=dprof.id, expected_order_id=parsed.order_id
+            o, raw, driver_id=dprof.id, expected_order_id=o.id
         )
         if ok:
             await _after_passenger_boarded(
@@ -1562,11 +1572,17 @@ async def loading_photos_done(cb: CallbackQuery, state: FSMContext, bot: Bot) ->
     data = await state.get_data()
     direction_id = data.get("loading_direction_id") or dprof.direction_id
     if direction_id:
-        await broadcast_loading_update(bot, int(direction_id))
+        session_id = data.get("loading_session_id")
+        await broadcast_loading_update(
+            bot,
+            int(direction_id),
+            loading_session_id=session_id,
+        )
     await state.set_state(None)
     await cb.message.answer(
-        "✅ Загрузка опубликована. Пассажиры и очередь уведомлены.\n"
-        "«▶️ Старт поездки» — после посадки и кода/QR.",
+        "✅ Загрузка опубликована.\n"
+        "Пассажирам отправлены фото машины и статус набора.\n"
+        "Дальше: «📲 Посадка (код/QR)» для каждого, затем «🚗 Выехать».",
         reply_markup=keyboards.before_trip_kb(),
     )
     await cb.answer()

@@ -158,9 +158,6 @@ def parse_verification_raw(
             source="code",
         )
 
-    if code and len(re.sub(r"\D", "", text)) == 6:
-        return None
-
     return None
 
 
@@ -230,6 +227,7 @@ def verification_error_label(key: str) -> str:
         "invalid_format": "Не удалось прочитать код/QR.",
         "not_driver": "Подтверждение доступно только водителю.",
         "not_your_order": "Это не ваш заказ.",
+        "code_not_found": "Код не найден среди ваших пассажиров на посадку.",
         "boarded": "ok",
     }
     return labels.get(key, key)
