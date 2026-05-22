@@ -28,18 +28,22 @@ def _assignment_driver_pk(ass: OrderDriverAssignment) -> int:
     return int(d) if isinstance(d, int) else d.id
 
 
-def platform_capacity_remaining(driver: DriverProfile) -> int:
+def platform_capacity_remaining(
+    driver: DriverProfile, *, exclude_order_id: Optional[int] = None
+) -> int:
     own = int(getattr(driver, "own_seats_reserved", 0) or 0)
-    occ = occupied_seats_for_driver(driver)
+    occ = occupied_seats_for_driver(driver, exclude_order_id=exclude_order_id)
     return max(0, driver.max_seats - own - occ)
 
 
 def compute_platform_seats(order: Order, driver: DriverProfile) -> int:
-    remaining = platform_capacity_remaining(driver)
+    remaining = platform_capacity_remaining(driver, exclude_order_id=order.id)
     return min(order.seats, remaining) if remaining > 0 else 0
 
 
-def occupied_seats_for_driver(driver: DriverProfile) -> int:
+def occupied_seats_for_driver(
+    driver: DriverProfile, *, exclude_order_id: Optional[int] = None
+) -> int:
     q = (
         Order.select(fn.SUM(Order.seats))
         .join(OrderDriverAssignment, on=(OrderDriverAssignment.order_id == Order.id))
@@ -55,9 +59,10 @@ def occupied_seats_for_driver(driver: DriverProfile) -> int:
             )
             & (Order.status.in_(list(ACTIVE_ORDER_STATUSES)))
         )
-        .scalar()
     )
-    return int(q or 0)
+    if exclude_order_id is not None:
+        q = q.where(Order.id != exclude_order_id)
+    return int(q.scalar() or 0)
 
 
 def can_assign_order(driver: DriverProfile, order: Order) -> bool:
