@@ -190,20 +190,12 @@ def get_accepted_assignment(order: Order) -> Optional[OrderDriverAssignment]:
     )
 
 
-def verify_order_code(
+def _validate_boarding_code(
     order: Order,
     code_or_token: str,
     *,
     expected_order_id: Optional[int] = None,
 ) -> Tuple[bool, str]:
-    if order.code_consumed_at:
-        return False, "already_used"
-    ass = get_accepted_assignment(order)
-    if not ass:
-        return False, "no_active_assignment"
-    if order.status != OrderStatus.ASSIGNED.value:
-        return False, "bad_status"
-
     parsed = code_service.parse_verification_raw(
         code_or_token,
         default_order_id=expected_order_id or order.id,
@@ -224,25 +216,153 @@ def verify_order_code(
             return False, "invalid_code"
     else:
         return False, "invalid_format"
+    return True, "ok"
 
-    driver = DriverProfile.get_by_id(ass.driver_id)
+
+def driver_accepted_orders(driver: DriverProfile, *, assigned_only: bool = False) -> List[Order]:
+    statuses = [OrderStatus.ASSIGNED.value]
+    if not assigned_only:
+        statuses.append(OrderStatus.IN_PROGRESS.value)
+    return list(
+        Order.select()
+        .join(OrderDriverAssignment, on=(OrderDriverAssignment.order_id == Order.id))
+        .where(
+            (OrderDriverAssignment.driver_id == driver.id)
+            & (OrderDriverAssignment.status == AssignmentStatus.ACCEPTED.value)
+            & (Order.status.in_(statuses))
+        )
+        .order_by(Order.id)
+    )
+
+
+def driver_boarding_summary(driver: DriverProfile) -> dict:
+    """Loading state: boarded vs waiting, free seats."""
+    orders = driver_accepted_orders(driver, assigned_only=True)
+    boarded = [o for o in orders if o.code_consumed_at]
+    waiting = [o for o in orders if not o.code_consumed_at]
+    occupied = sum(o.seats for o in boarded)
+    free = platform_capacity_remaining(driver)
+    in_trip = (
+        Order.select()
+        .join(OrderDriverAssignment, on=(OrderDriverAssignment.order_id == Order.id))
+        .where(
+            (OrderDriverAssignment.driver_id == driver.id)
+            & (OrderDriverAssignment.status == AssignmentStatus.ACCEPTED.value)
+            & (Order.status == OrderStatus.IN_PROGRESS.value)
+        )
+        .exists()
+    )
+    return {
+        "orders": orders,
+        "boarded": boarded,
+        "waiting_boarding": waiting,
+        "boarded_seats": occupied,
+        "free_seats": free,
+        "in_trip": in_trip,
+    }
+
+
+def verify_passenger_boarding(
+    order: Order,
+    code_or_token: str,
+    *,
+    driver_id: int,
+    expected_order_id: Optional[int] = None,
+) -> Tuple[bool, str]:
+    """
+    Mark passenger as boarded (code/QR ok). Order stays ASSIGNED until departure.
+    """
+    if order.code_consumed_at:
+        if order.status == OrderStatus.ASSIGNED.value:
+            return False, "already_boarded"
+        return False, "already_used"
+    ass = get_accepted_assignment(order)
+    if not ass or _assignment_driver_pk(ass) != driver_id:
+        return False, "not_your_order"
+    if order.status == OrderStatus.IN_PROGRESS.value:
+        return False, "already_departed"
+    if order.status != OrderStatus.ASSIGNED.value:
+        return False, "bad_status"
+
+    ok, key = _validate_boarding_code(
+        order, code_or_token, expected_order_id=expected_order_id
+    )
+    if not ok:
+        return False, key
+
+    driver = DriverProfile.get_by_id(driver_id)
     now = datetime.now(timezone.utc)
     Order.update(
-        status=OrderStatus.IN_PROGRESS.value,
         code_consumed_at=now,
-        started_at=now,
         boarding_code=None,
         updated_at=now,
     ).where(Order.id == order.id).execute()
     commission_service.record_commission(order, driver, on_start=True)
     update_driver_loading(driver)
     audit_service.log_action(
-        "code_verified",
+        "passenger_boarded",
         entity_type="order",
         entity_id=str(order.id),
-        payload={"driver_id": _assignment_driver_pk(ass)},
+        payload={"driver_id": driver_id},
     )
-    return True, "ok"
+    return True, "boarded"
+
+
+def depart_driver_trip(driver: DriverProfile) -> Tuple[bool, str, dict]:
+    """
+    Start trip: all boarded (code confirmed) orders → IN_PROGRESS.
+    """
+    summary = driver_boarding_summary(driver)
+    if summary["in_trip"]:
+        return False, "trip_already_started", summary
+
+    boarded: List[Order] = summary["boarded"]
+    if not boarded:
+        return False, "no_boarded_passengers", summary
+
+    now = datetime.now(timezone.utc)
+    for o in boarded:
+        Order.update(
+            status=OrderStatus.IN_PROGRESS.value,
+            started_at=now,
+            updated_at=now,
+        ).where(Order.id == o.id).execute()
+        audit_service.log_action(
+            "trip_departed",
+            actor_telegram_id=driver.user.telegram_id,
+            entity_type="order",
+            entity_id=str(o.id),
+            payload={"driver_id": driver.id},
+        )
+
+    update_driver_loading(driver)
+    return True, "ok", {
+        "departed_orders": boarded,
+        "waiting_boarding": summary["waiting_boarding"],
+        "free_seats_at_depart": summary["free_seats"],
+        "boarded_seats": summary["boarded_seats"],
+    }
+
+
+def verify_order_code(
+    order: Order,
+    code_or_token: str,
+    *,
+    expected_order_id: Optional[int] = None,
+    driver_id: Optional[int] = None,
+) -> Tuple[bool, str]:
+    """Backward-compatible alias: boarding only, not departure."""
+    if driver_id is None:
+        ass = get_accepted_assignment(order)
+        if not ass:
+            return False, "no_active_assignment"
+        driver_id = _assignment_driver_pk(ass)
+    return verify_passenger_boarding(
+        order,
+        code_or_token,
+        driver_id=driver_id,
+        expected_order_id=expected_order_id,
+    )
 
 
 def min_trip_seconds(direction: Direction) -> int:

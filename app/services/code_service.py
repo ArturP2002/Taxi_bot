@@ -218,7 +218,11 @@ def persist_boarding_code(order_id: int, code: str) -> None:
 def verification_error_label(key: str) -> str:
     labels = {
         "already_used": "Код уже использован.",
+        "already_boarded": "Этот пассажир уже отмечен как посаженный.",
+        "already_departed": "Поездка уже начата — посадка по этому заказу закрыта.",
         "no_active_assignment": "Нет принятого заказа у водителя.",
+        "no_boarded_passengers": "Сначала отметьте посадку хотя бы одного пассажира (код/QR).",
+        "trip_already_started": "Рейс уже в пути.",
         "bad_status": "Заказ не в статусе «назначен».",
         "invalid_token": "QR устарел или не для этого заказа.",
         "invalid_code": "Неверный код. Проверьте 6 цифр.",
@@ -226,5 +230,6 @@ def verification_error_label(key: str) -> str:
         "invalid_format": "Не удалось прочитать код/QR.",
         "not_driver": "Подтверждение доступно только водителю.",
         "not_your_order": "Это не ваш заказ.",
+        "boarded": "ok",
     }
     return labels.get(key, key)

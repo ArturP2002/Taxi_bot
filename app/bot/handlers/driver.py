@@ -391,14 +391,20 @@ async def my_order(message: Message, state: FSMContext) -> None:
     o = _assigned_order(dprof)
     if o:
         d = Direction.get_by_id(o.direction_id)
+        summary = order_service.driver_boarding_summary(dprof)
+        extra = ""
+        if summary["boarded"]:
+            extra = (
+                f"\nПосажено: {len(summary['boarded'])} заказ(ов), "
+                f"{summary['boarded_seats']} мест. Свободно: {summary['free_seats']}."
+            )
         await message.answer(
-            f"📋 Заказ #{o.id} принят, ожидает старта\n"
-            f"{d.from_label} → {d.to_label}\n"
-            f"Мест: {o.seats}\n\n"
-            "Нажмите «▶️ Старт поездки» и введите 6 цифр кода или QR от пассажира.",
+            f"📋 Набор пассажиров\n"
+            f"{d.from_label} → {d.to_label}{extra}\n\n"
+            "«📲 Посадка (код/QR)» — отметить пассажира.\n"
+            "«🚗 Выехать» — начать рейс, когда все в машине.",
             reply_markup=keyboards.before_trip_kb(),
         )
-        await state.update_data(active_order_id=o.id)
         return
 
     await message.answer("Нет активных назначений.")
@@ -569,34 +575,81 @@ async def rest_hours(message: Message, state: FSMContext, bot: Bot) -> None:
     )
 
 
-@router.message(F.text == "▶️ Старт поездки")
-async def start_trip_prompt(message: Message, state: FSMContext) -> None:
+@router.message(F.text.in_({"📲 Посадка (код/QR)", "▶️ Старт поездки"}))
+async def board_passenger_prompt(message: Message, state: FSMContext) -> None:
     cur = await state.get_state()
     if cur == DriverCode.waiting_code.state:
-        await message.answer("Уже жду код. Введите 6 цифр или QR от пассажира.")
+        await message.answer("Уже жду код. Введите 6 цифр, QR или фото QR.")
         return
     await state.clear()
     ensure_user(message.from_user, prefer_driver=True)
     u = User.get(telegram_id=message.from_user.id)
     dprof = DriverProfile.get(user=u)
-    o = _assigned_order(dprof)
-    if not o:
-        if _in_progress_order(dprof):
-            await message.answer("Поездка уже начата.", reply_markup=keyboards.trip_actions_kb())
-        else:
-            await message.answer("Нет заказа для старта. Откройте «📥 Мой заказ».")
+    if _in_progress_order(dprof):
+        await message.answer("Рейс уже в пути.", reply_markup=keyboards.trip_actions_kb())
+        return
+    summary = order_service.driver_boarding_summary(dprof)
+    if not summary["orders"]:
+        await message.answer("Нет принятых заказов. Откройте «📥 Мой заказ».")
         return
     await state.set_state(DriverCode.waiting_code)
-    await state.update_data(active_order_id=o.id)
+    await state.update_data(boarding_mode=True)
     await message.answer(
-        f"Старт заказа #{o.id}.\n\n"
-        "Способы подтверждения:\n"
-        "• Введите 6 цифр кода от пассажира\n"
-        "• Пришлите 📷 фото QR с экрана пассажира\n"
-        "• Отсканируйте QR камерой телефона (откроется бот)\n\n"
-        "Код также виден у пассажира в «🔐 Код и QR».",
+        "Посадка пассажира (код или QR):\n\n"
+        "• 6 цифр кода\n"
+        "• 📷 фото QR с экрана\n"
+        "• скан QR камерой (откроется бот)\n\n"
+        "Можно отметить нескольких пассажиров. "
+        "Выезд — отдельно кнопкой «🚗 Выехать».",
         reply_markup=keyboards.cancel_kb(),
     )
+
+
+@router.message(F.text == "🚗 Выехать")
+async def depart_trip(message: Message, state: FSMContext, bot: Bot) -> None:
+    await state.clear()
+    ensure_user(message.from_user, prefer_driver=True)
+    u = User.get(telegram_id=message.from_user.id)
+    dprof = DriverProfile.get(user=u)
+    if _in_progress_order(dprof):
+        await message.answer("Рейс уже в пути.", reply_markup=keyboards.trip_actions_kb())
+        return
+    ok, key, info = order_service.depart_driver_trip(dprof)
+    if not ok:
+        from app.services import code_service
+
+        await message.answer(code_service.verification_error_label(key))
+        if key == "no_boarded_passengers":
+            summary = order_service.driver_boarding_summary(dprof)
+            if summary["waiting_boarding"]:
+                await message.answer(
+                    "Сначала «📲 Посадка (код/QR)» для каждого пассажира."
+                )
+        return
+    d = Direction.get_by_id(dprof.direction_id)
+    from app.bot import messages as bot_messages
+
+    await message.answer(
+        bot_messages.format_driver_departure_status(summary=info, direction=d),
+        reply_markup=keyboards.trip_actions_kb(),
+    )
+    for o in info.get("departed_orders") or []:
+        try:
+            await bot.send_message(
+                o.passenger.telegram_id,
+                f"🚗 Поездка #{o.id} началась. Приятной дороги!",
+            )
+        except Exception:
+            pass
+        await notify_trip_started(
+            bot,
+            o.id,
+            dprof.full_name or f"ID:{dprof.id}",
+            route=f"{d.from_label} → {d.to_label}",
+            seats=o.seats,
+            car_info=dprof.car_info,
+            own_seats=int(dprof.own_seats_reserved or 0),
+        )
 
 
 @router.message(DriverCode.waiting_code, F.text, _NOT_MENU_TEXT)
@@ -605,74 +658,66 @@ async def enter_code(message: Message, state: FSMContext, bot: Bot) -> None:
         await state.clear()
         await message.answer("Ввод кода отменён.", reply_markup=keyboards.before_trip_kb())
         return
-    data = await state.get_data()
-    oid = data.get("active_order_id")
-    if not oid:
-        await state.clear()
-        return
-    o = Order.get_by_id(oid)
     from app.services import code_service
 
-    ok, key = order_service.verify_order_code(
-        o, message.text.strip(), expected_order_id=oid
+    u = User.get(telegram_id=message.from_user.id)
+    dprof = DriverProfile.get(user=u)
+    data = await state.get_data()
+    parsed = code_service.parse_verification_raw(
+        message.text.strip(),
+        default_order_id=data.get("active_order_id"),
+    )
+    if not parsed:
+        await message.answer(code_service.verification_error_label("invalid_format"))
+        return
+    try:
+        o = Order.get_by_id(parsed.order_id)
+    except Order.DoesNotExist:
+        await message.answer("Заказ не найден.")
+        return
+    ok, key = order_service.verify_passenger_boarding(
+        o,
+        message.text.strip(),
+        driver_id=dprof.id,
+        expected_order_id=parsed.order_id,
     )
     if not ok:
         await message.answer(code_service.verification_error_label(key))
         return
-    u = User.get(telegram_id=message.from_user.id)
-    dprof = DriverProfile.get_by_id(DriverProfile.get(user=u).id)
-    await _complete_trip_start(message, state, bot, order=Order.get_by_id(o.id), dprof=dprof)
+    await _after_passenger_boarded(message, state, bot, dprof=dprof, order=Order.get_by_id(o.id))
 
 
-async def _complete_trip_start(
+async def _after_passenger_boarded(
     message: Message,
     state: FSMContext,
     bot: Bot,
     *,
-    order: Order,
     dprof: DriverProfile,
+    order: Order,
 ) -> None:
-    from app.models import CommissionLedger
+    from app.bot import messages as bot_messages
 
-    comm = CommissionLedger.select().where(CommissionLedger.order_id == order.id).first()
-    comm_txt = f" Начислена комиссия: {comm.amount} ₽." if comm else ""
-    d = Direction.get_by_id(order.direction_id)
+    dprof = DriverProfile.get_by_id(dprof.id)
+    summary = order_service.driver_boarding_summary(dprof)
     await state.clear()
     await message.answer(
-        f"✅ Поездка #{order.id} началась.{comm_txt}\n"
-        f"Маршрут: {d.from_label} → {d.to_label}\n"
-        f"Мест: {order.seats} | Свои: {dprof.own_seats_reserved}\n"
-        f"Долг: {dprof.balance} ₽",
-        reply_markup=keyboards.trip_actions_kb(),
+        bot_messages.format_driver_boarding_status(order=order, summary=summary),
+        reply_markup=keyboards.before_trip_kb(),
     )
     try:
         await bot.send_message(
             order.passenger.telegram_id,
-            "Водитель подтвердил посадку. Приятной поездки!",
+            f"✅ Водитель отметил вашу посадку (заказ #{order.id}). "
+            "Ожидайте выезда.",
         )
     except Exception:
         pass
-    await notify_trip_started(
-        bot,
-        order.id,
-        dprof.full_name or f"ID:{dprof.id}",
-        route=f"{d.from_label} → {d.to_label}",
-        seats=order.seats,
-        car_info=dprof.car_info,
-        own_seats=int(dprof.own_seats_reserved or 0),
-    )
 
 
 @router.message(DriverCode.waiting_code, F.photo | F.document)
 async def enter_code_photo(message: Message, state: FSMContext, bot: Bot) -> None:
     from app.services import code_service
 
-    data = await state.get_data()
-    oid = data.get("active_order_id")
-    if not oid:
-        await state.clear()
-        return
-    o = Order.get_by_id(oid)
     u = User.get(telegram_id=message.from_user.id)
     dprof = DriverProfile.get(user=u)
 
@@ -702,12 +747,20 @@ async def enter_code_photo(message: Message, state: FSMContext, bot: Bot) -> Non
 
     last_err = "invalid_format"
     for raw in payloads:
-        ok, key = order_service.verify_order_code(
-            o, raw, expected_order_id=oid
+        parsed = code_service.parse_verification_raw(raw)
+        if not parsed:
+            continue
+        try:
+            o = Order.get_by_id(parsed.order_id)
+        except Order.DoesNotExist:
+            continue
+        ok, key = order_service.verify_passenger_boarding(
+            o, raw, driver_id=dprof.id, expected_order_id=parsed.order_id
         )
         if ok:
-            dprof = DriverProfile.get_by_id(dprof.id)
-            await _complete_trip_start(message, state, bot, order=Order.get_by_id(o.id), dprof=dprof)
+            await _after_passenger_boarded(
+                message, state, bot, dprof=dprof, order=Order.get_by_id(o.id)
+            )
             return
         last_err = key
     await message.answer(code_service.verification_error_label(last_err))

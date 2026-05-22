@@ -58,10 +58,18 @@ def test_min_trip_and_complete(monkeypatch):
     Order.update(confirmation_code_hash=code_service.hash_code(o.id, code)).where(Order.id == o.id).execute()
     o = Order.get_by_id(o.id)
     OrderDriverAssignment.create(order=o, driver=drv, status=AssignmentStatus.ACCEPTED.value)
-    ok, _ = order_service.verify_order_code(o, code)
-    assert ok
+    ok, key = order_service.verify_passenger_boarding(o, code, driver_id=drv.id)
+    assert ok and key == "boarded"
+    o = Order.get_by_id(o.id)
+    assert o.status == OrderStatus.ASSIGNED.value
+    assert o.code_consumed_at is not None
+    assert o.started_at is None
+
+    ok, key, _ = order_service.depart_driver_trip(drv)
+    assert ok and key == "ok"
     o = Order.get_by_id(o.id)
     assert o.status == OrderStatus.IN_PROGRESS.value
+    assert o.started_at is not None
 
     # too early
     ok, key = order_service.complete_order(o, drv)

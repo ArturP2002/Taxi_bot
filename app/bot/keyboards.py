@@ -36,6 +36,8 @@ DRIVER_MENU_TEXTS: frozenset[str] = frozenset({
     "📞 Связь с админом",
     BTN_PASSENGER_MODE,
     "▶️ Старт поездки",
+    "📲 Посадка (код/QR)",
+    "🚗 Выехать",
     "💬 Связь с пассажиром",
     "🔁 Встать обратно",
     "✅ Завершить поездку",
@@ -168,7 +170,8 @@ def admin_suggestion_inline(assignment_id: int) -> InlineKeyboardMarkup:
 
 def before_trip_kb() -> ReplyKeyboardMarkup:
     b = ReplyKeyboardBuilder()
-    b.button(text="▶️ Старт поездки")
+    b.button(text="📲 Посадка (код/QR)")
+    b.button(text="🚗 Выехать")
     b.button(text="💬 Связь с пассажиром")
     b.button(text="🔄 Передать пассажира админу")
     b.adjust(1)

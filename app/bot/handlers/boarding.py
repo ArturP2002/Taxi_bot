@@ -7,12 +7,9 @@ from aiogram.types import Message
 
 from app.bot import keyboards
 from app.models import (
-    CommissionLedger,
     Direction,
     DriverProfile,
     Order,
-    OrderDriverAssignment,
-    AssignmentStatus,
     OrderStatus,
     User,
     UserRole,
@@ -55,60 +52,25 @@ async def try_verify_from_deeplink(
             await message.answer("Профиль водителя не найден.")
             return True
 
-        ass = order_service.get_accepted_assignment(order)
-        if not ass or ass.driver_id != dprof.id:
-            await message.answer(
-                f"Заказ #{order.id} не назначен вам.\n"
-                "Откройте «📥 Мой заказ» и «▶️ Старт поездки»."
-            )
-            return True
-
         if order.status == OrderStatus.IN_PROGRESS.value:
             await message.answer(
-                f"Поездка #{order.id} уже начата.",
+                f"Рейс по заказу #{order.id} уже в пути.",
                 reply_markup=keyboards.trip_actions_kb(),
             )
             return True
 
-        if order.status != OrderStatus.ASSIGNED.value:
-            await message.answer(
-                f"Заказ #{order.id} в статусе «{order.status}» — старт недоступен."
-            )
-            return True
-
-        ok, key = order_service.verify_order_code(
-            order, payload, expected_order_id=order.id
+        ok, key = order_service.verify_passenger_boarding(
+            order, payload, driver_id=dprof.id, expected_order_id=order.id
         )
         if not ok:
             await message.answer(code_service.verification_error_label(key))
             return True
 
-        await state.clear()
-        dprof = DriverProfile.get_by_id(dprof.id)
-        comm = CommissionLedger.select().where(CommissionLedger.order_id == order.id).first()
-        comm_txt = f" Начислена комиссия: {comm.amount} ₽." if comm else ""
-        await message.answer(
-            f"✅ По QR: поездка #{order.id} началась.{comm_txt}\n"
-            f"{direction.from_label} → {direction.to_label}",
-            reply_markup=keyboards.trip_actions_kb(),
-        )
-        try:
-            await bot.send_message(
-                order.passenger.telegram_id,
-                "Водитель отсканировал QR. Приятной поездки!",
-            )
-        except Exception:
-            pass
-        from app.services.admin_notify import notify_trip_started
+        from app.bot.handlers.driver import _after_passenger_boarded
 
-        await notify_trip_started(
-            bot,
-            order.id,
-            dprof.full_name or f"ID:{dprof.id}",
-            route=f"{direction.from_label} → {direction.to_label}",
-            seats=order.seats,
-            car_info=dprof.car_info,
-            own_seats=int(dprof.own_seats_reserved or 0),
+        await state.clear()
+        await _after_passenger_boarded(
+            message, state, bot, dprof=dprof, order=Order.get_by_id(order.id)
         )
         return True
 

@@ -22,8 +22,9 @@ PASSENGER_RULES = """📌 ПРАВИЛА ПАССАЖИРА
 DRIVER_RULES = """📌 ПРАВИЛА ВОДИТЕЛЯ
 
 — Водитель работает только через систему сервиса.
-— Перед началом поездки водитель обязан проверить код или QR пассажира.
-— Без подтверждения кода поездка считается неоформленной.
+— Перед выездом отметьте посадку каждого пассажира (код или QR).
+— «📲 Посадка (код/QR)» — пассажир в машине; «🚗 Выехать» — старт рейса.
+— Без подтверждения кода посадка не засчитывается.
 — Один код подтверждает весь заказ и количество мест.
 — После подтверждения поездки код становится недействительным.
 — Водителю запрещено брать пассажиров "мимо системы".
@@ -194,7 +195,7 @@ def format_driver_loading_status(
         f"{status_label}\n"
         f"Занято: {occupied}/{max_seats}\n\n"
         f"Пассажиры:\n{passengers_block}\n\n"
-        "После посадки всех — «▶️ Старт поездки» и код/QR пассажира."
+        "После посадки всех — «📲 Посадка (код/QR)», затем «🚗 Выехать»."
     )
 
 
@@ -214,6 +215,49 @@ def format_queue_driver_loading_notice(
     else:
         text += "\nОжидайте."
     return text
+
+
+def format_driver_boarding_status(
+    *,
+    order: Order,
+    summary: dict,
+) -> str:
+    """Message after a passenger is boarded (not departure)."""
+    lines = [
+        f"✅ Пассажир посажен · заказ #{order.id} · {order.seats} мест",
+        f"В машине: {summary['boarded_seats']} мест · свободно {summary['free_seats']}",
+    ]
+    waiting = summary.get("waiting_boarding") or []
+    if waiting:
+        parts = [f"#{o.id} ({o.seats} м.)" for o in waiting[:5]]
+        lines.append("Без кода: " + ", ".join(parts))
+    if summary.get("free_seats", 0) > 0:
+        lines.append(
+            "\nМожно посадить ещё пассажиров — «📲 Посадка (код/QR)».\n"
+            "Когда все в машине — «🚗 Выехать»."
+        )
+    else:
+        lines.append("\nМашина полная. Нажмите «🚗 Выехать», когда готовы выехать.")
+    return "\n".join(lines)
+
+
+def format_driver_departure_status(*, summary: dict, direction: Direction) -> str:
+    boarded = summary.get("boarded") or []
+    waiting = summary.get("waiting_boarding") or []
+    lines = [
+        f"🚗 Рейс начат · {direction.from_label} → {direction.to_label}",
+        f"Пассажиров в поездке: {len(boarded)} ({summary.get('boarded_seats', 0)} мест)",
+    ]
+    if waiting:
+        lines.append(
+            f"⚠️ Без посадки остались заказы: "
+            + ", ".join(f"#{o.id}" for o in waiting[:5])
+        )
+    if summary.get("free_seats", 0) > 0:
+        lines.append(
+            f"Свободно было {summary['free_seats']} мест — выехали неполным рейсом."
+        )
+    return "\n".join(lines)
 
 
 def format_driver_on_loading_accept(
