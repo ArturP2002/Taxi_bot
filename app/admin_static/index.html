@@ -150,10 +150,29 @@ var AUTH_ERRORS = {
   internal_server_error: 'Ошибка сервера. Перезапустите API и попробуйте снова.'
 };
 
+var API_ERRORS = {
+  direction_mismatch: 'Водитель на другом направлении. Назначьте вручную или нажмите «Другой».',
+  capacity_exceeded: 'Недостаточно свободных мест у водителя.',
+  driver_offline: 'Водитель не в сети.',
+  no_suggestion: 'Нет предложения системы. Обновите список.',
+  direction_required: 'Выберите направление при подтверждении водителя.',
+  order_not_splittable: 'Разделить можно только новый заказ или на проверке.',
+  invalid_split_seats: 'Укажите число мест меньше текущего (минимум 1).'
+};
+
 function authErrorLabel(detail) {
   if (!detail) return 'Ошибка авторизации';
   var key = String(detail);
-  return AUTH_ERRORS[key] || key;
+  return API_ERRORS[key] || AUTH_ERRORS[key] || key;
+}
+
+function pluralZayavki(n) {
+  n = Math.abs(parseInt(n, 10) || 0) % 100;
+  var n1 = n % 10;
+  if (n > 10 && n < 20) return 'заявок';
+  if (n1 > 1 && n1 < 5) return 'заявки';
+  if (n1 === 1) return 'заявка';
+  return 'заявок';
 }
 
 function clearAuthToken() {
@@ -590,19 +609,36 @@ function renderOrders() {
       html += row('Мест', o.seats);
       html += row('Телефон', o.phone);
       html += row('Подача', (o.pickup_location || '—') + ' ' + (o.pickup_time_text || ''));
+      if (o.status === 'admin_review') {
+        html += '<div style="margin:8px 0;padding:8px;background:rgba(248,81,73,.1);border-radius:8px;font-size:12px;color:var(--danger)">';
+        html += '🆘 Перебор: не влезает в одну машину. Назначьте вручную или разделите заказ.';
+        html += '</div>';
+      }
       if (o.suggestion) {
         var sg = o.suggestion;
+        var dirOk = sg.direction_match !== false;
         html += '<div style="margin:10px 0;padding:10px;background:rgba(245,197,24,.08);border:1px solid var(--gold-dim);border-radius:8px">';
         html += '<div style="font-size:12px;color:var(--gold);font-weight:600;margin-bottom:6px">🚗 Предложение системы</div>';
         html += row('Водитель', (sg.driver_name || 'ID:'+sg.driver_id) + (sg.driver_online ? ' 🟢' : ' 🔴'));
+        if (sg.order_direction_label) html += row('Заказ', sg.order_direction_label);
+        if (sg.driver_direction_label) html += row('Водитель на', sg.driver_direction_label);
+        if (!dirOk) {
+          html += '<div style="font-size:12px;color:var(--danger);margin-top:6px">⚠️ Направления не совпадают — подтверждение недоступно</div>';
+        }
         html += '</div>';
         html += '<div class="actions">';
-        html += '<button class="btn btn-success" onclick="showConfirmSuggestion(' + o.id + ')">✅ Подтвердить</button>';
+        if (dirOk) {
+          html += '<button class="btn btn-success" onclick="showConfirmSuggestion(' + o.id + ')">✅ Подтвердить</button>';
+        }
         html += '<button class="btn btn-danger" onclick="doRejectSuggestion(' + o.id + ')">❌ Другой</button>';
         html += '<button class="btn btn-outline" onclick="showAssignModal(' + o.id + ',' + o.direction_id + ',' + o.seats + ')">Назначить вручную</button>';
         html += '</div>';
       } else if (o.status === 'new' || o.status === 'admin_review') {
-        html += '<div class="actions"><button class="btn btn-gold" onclick="showAssignModal(' + o.id + ',' + o.direction_id + ',' + o.seats + ')">Назначить водителя</button></div>';
+        html += '<div class="actions"><button class="btn btn-gold" onclick="showAssignModal(' + o.id + ',' + o.direction_id + ',' + o.seats + ')">Назначить водителя</button>';
+        if (o.status === 'admin_review' && o.seats > 1) {
+          html += '<button class="btn btn-outline" onclick="showSplitOrder(' + o.id + ',' + o.seats + ')">✂️ Разделить места</button>';
+        }
+        html += '</div>';
       }
       if (o.status === 'awaiting_payment') {
         html += '<div class="actions"><button class="btn btn-success" onclick="confirmPassengerPay(' + o.id + ')">Подтвердить оплату</button></div>';
@@ -725,11 +761,16 @@ function showAssignModal(orderId, directionId, seats) {
   api('/api/admin/drivers').then(function(data) {
     var drivers = ensureArray(data);
     cache.drivers = drivers;
-    var eligible = drivers.filter(function(d) { return d.direction_id === directionId && d.status === 'active'; });
+    var eligible = drivers.filter(function(d) {
+      if (d.direction_id !== directionId || d.status !== 'active') return false;
+      var cap = (d.max_seats || 0) - (d.own_seats_reserved || 0);
+      return cap >= seats;
+    });
     var opts = '';
     for (var i = 0; i < eligible.length; i++) {
       var d = eligible[i];
-      opts += '<option value="' + d.id + '">' + (d.full_name || 'ID:'+d.id) + ' (мест: ' + d.max_seats + ', ' + (d.online ? '🟢' : '🔴') + ')</option>';
+      var cap = (d.max_seats || 0) - (d.own_seats_reserved || 0);
+      opts += '<option value="' + d.id + '">' + (d.full_name || 'ID:'+d.id) + ' (до ' + cap + ' мест, ' + (d.online ? '🟢' : '🔴') + ')</option>';
     }
     var html = '<h3>Назначить на заказ #' + orderId + '</h3>';
     if (eligible.length === 0) {
@@ -943,7 +984,7 @@ function doEditDriver(driverId) {
 
 function showApproveDriver(driverId) {
   var directions = ensureArray(cache.directions);
-  var opts = '<option value="">— Назначить позже —</option>';
+  var opts = '<option value="">— Выберите направление —</option>';
   for (var i = 0; i < directions.length; i++) {
     var d = directions[i];
     opts += '<option value="' + d.id + '">' + d.from_label + ' → ' + d.to_label + '</option>';
@@ -954,7 +995,7 @@ function showApproveDriver(driverId) {
   }
   var html = '<h3>Подтвердить водителя #' + driverId + '</h3>';
   html += '<div id="approve-photos" class="driver-photos-section"></div>';
-  html += '<div class="form-group"><label>Направление (необязательно)</label><select id="m-dir">' + opts + '</select></div>';
+  html += '<div class="form-group"><label>Направление (обязательно)</label><select id="m-dir">' + opts + '</select></div>';
   html += '<div class="form-group"><label>Макс. мест</label><input id="m-seats" type="number" value="6"/>';
   html += '<div class="chips">' + seatsChips + '</div></div>';
   html += '<div class="actions"><button class="btn btn-success" onclick="doApproveDriver(' + driverId + ')">Подтвердить</button>';
@@ -965,9 +1006,9 @@ function showApproveDriver(driverId) {
 
 function doApproveDriver(driverId) {
   var dirVal = document.getElementById('m-dir').value;
+  if (!dirVal) { toast('Выберите направление'); return; }
   var seats = +document.getElementById('m-seats').value || 6;
-  var body = { max_seats: seats };
-  if (dirVal) body.direction_id = +dirVal;
+  var body = { max_seats: seats, direction_id: +dirVal };
   api('/api/admin/drivers/' + driverId + '/approve', {
     method: 'POST', body: JSON.stringify(body)
   }).then(function() { closeModal(); toast('Водитель подтверждён'); renderDrivers(); })
@@ -1147,16 +1188,50 @@ function doCreateDirection() {
 }
 
 // Queue
+function showSplitOrder(orderId, totalSeats) {
+  var html = '<h3>Разделить заказ #' + orderId + '</h3>';
+  html += '<p style="font-size:13px;color:var(--text-dim);margin-bottom:12px">Оставьте часть мест в этом заказе, остальные уйдут в новый заказ (тот же маршрут).</p>';
+  html += '<div class="form-group"><label>Мест в этом заказе</label><input id="sp-first" type="number" min="1" max="' + (totalSeats - 1) + '" value="' + Math.min(3, totalSeats - 1) + '"/></div>';
+  html += '<div class="actions"><button class="btn btn-gold" onclick="doSplitOrder(' + orderId + ',' + totalSeats + ')">Разделить</button>';
+  html += '<button class="btn btn-outline" onclick="closeModal()">Отмена</button></div>';
+  openModal(html);
+}
+
+function doSplitOrder(orderId, totalSeats) {
+  var first = parseInt(document.getElementById('sp-first').value, 10);
+  if (!first || first <= 0 || first >= totalSeats) {
+    toast('Укажите от 1 до ' + (totalSeats - 1));
+    return;
+  }
+  api('/api/admin/orders/' + orderId + '/split', {
+    method: 'POST',
+    body: JSON.stringify({ first_seats: first })
+  }).then(function(res) {
+    closeModal();
+    toast('Заказ разделён: #' + res.original_order_id + ' и #' + res.new_order_id);
+    renderOrders();
+  }).catch(function(e) { toast('Ошибка: ' + e.message); });
+}
+
 function renderQueueLeg(board) {
   var html = '';
+  var maxCar = board.max_single_car_seats != null ? board.max_single_car_seats : 0;
   var w = board.waiting || {};
   if (w.order_count) {
     html += '<div style="margin:8px 0;padding:8px;background:rgba(245,197,24,.06);border-radius:8px">';
-    html += '<div style="font-weight:600;color:var(--gold)">📋 Без машины: ' + w.total_seats + ' мест (' + w.order_count + ' заявок)</div>';
+    html += '<div style="font-weight:600;color:var(--gold)">📋 Без машины: ' + w.total_seats + ' мест (' + w.order_count + ' ' + pluralZayavki(w.order_count) + ')';
+    if (maxCar > 0) html += ' · макс. в 1 машине: ' + maxCar;
+    html += '</div>';
     var olist = w.orders || [];
     for (var wi = 0; wi < olist.length && wi < 8; wi++) {
       var wo = olist[wi];
-      html += '<div style="font-size:11px;margin-top:4px">#' + wo.id + ' · ' + wo.seats + ' мест · ' + wo.from_location + '</div>';
+      var overflow = maxCar > 0 && wo.seats > maxCar;
+      html += '<div style="font-size:11px;margin-top:6px;display:flex;justify-content:space-between;align-items:center;gap:8px">';
+      html += '<span>#' + wo.id + ' · ' + wo.seats + ' мест · ' + escapeHtml(wo.from_location);
+      if (overflow) html += ' <span style="color:var(--danger)">(перебор)</span>';
+      html += '</span>';
+      html += '<button class="btn btn-gold" style="padding:4px 8px;font-size:11px" onclick="showAssignModal(' + wo.id + ',' + board.direction_id + ',' + wo.seats + ')">Назначить</button>';
+      html += '</div>';
     }
     html += '</div>';
   }
@@ -1178,8 +1253,12 @@ function renderQueueLeg(board) {
     var qq = q[j];
     var name = qq.full_name || ('#' + qq.driver_id);
     html += '<div class="row"><span class="lbl">' + (j+1) + '. ' + name + '</span><span class="val" style="font-size:11px">';
-    html += (qq.loading_status || '') + ' · свободно ' + (qq.free_seats != null ? qq.free_seats : '?');
-    if (qq.loading_label) html += '<br/>⏱ ' + qq.loading_label;
+    html += escapeHtml(qq.loading_status || '—');
+    if (qq.free_seats != null) {
+      html += '<br/>Платформа: ' + qq.free_seats + ' мест';
+      if (qq.own_seats_reserved) html += ' (своих: ' + qq.own_seats_reserved + ')';
+    }
+    if (qq.loading_label) html += '<br/>⏱ ' + escapeHtml(qq.loading_label);
     if (qq.passengers && qq.passengers.length) {
       for (var pj = 0; pj < qq.passengers.length; pj++) {
         html += '<br/>#' + qq.passengers[pj].order_id + ' · ' + qq.passengers[pj].seats + 'м';

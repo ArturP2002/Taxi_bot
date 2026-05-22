@@ -213,7 +213,9 @@ async def phone_enter(message: Message, state: FSMContext, bot: Bot) -> None:
 
     if order.status == OrderStatus.ADMIN_REVIEW.value:
         from app.services.admin_notify import notify_sos_overflow
+        from app.services import overflow_service
 
+        cap = overflow_service.direction_capacity_info(order.direction_id)
         await notify_sos_overflow(
             bot,
             order.id,
@@ -222,6 +224,7 @@ async def phone_enter(message: Message, state: FSMContext, bot: Bot) -> None:
             direction_to=direction.to_label,
             from_loc=order.from_location,
             to_loc=order.to_location,
+            max_single_car_seats=cap.max_single_car_seats,
         )
     elif order_status == OrderStatus.NEW.value:
         suggestion = order_service.suggest_driver_for_order(order)

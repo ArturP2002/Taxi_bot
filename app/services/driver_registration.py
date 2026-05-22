@@ -13,6 +13,109 @@ from app.services.admin_notify import notify_driver_registered, notify_proposal
 
 logger = logging.getLogger("taxi_bot.driver_registration")
 
+REGISTRATION_TOTAL_STEPS = 12
+
+_ROUTE_SEPARATORS = ("→", "->", "—", "–", " - ", " – ", " — ")
+
+
+def looks_like_full_route(text: str) -> bool:
+    """User entered «Саратов — Сочи» instead of a single city."""
+    t = (text or "").strip()
+    if not t:
+        return False
+    for sep in _ROUTE_SEPARATORS:
+        if sep in t:
+            return True
+    if " - " in t or (t.count("-") >= 2 and len(t) > 12):
+        return True
+    return False
+
+
+def validate_single_city(text: str) -> tuple[bool, str]:
+    city = (text or "").strip()
+    if len(city) < 2:
+        return False, "Введите название города (минимум 2 символа)."
+    if looks_like_full_route(city):
+        return (
+            False,
+            "Укажите только один город, без маршрута.\n"
+            "Пример: Саратов\n"
+            "Не пишите «Саратов — Сочи» — город назначения спросим на следующем шаге.",
+        )
+    return True, city
+
+
+def registration_is_submitted(dprof: DriverProfile) -> bool:
+    return bool(
+        (dprof.full_name or "").strip()
+        and (dprof.phone or "").strip()
+        and (dprof.car_info or "").strip()
+    )
+
+
+def driver_needs_registration(dprof: DriverProfile) -> bool:
+    if dprof.status == DriverStatus.ACTIVE.value:
+        return False
+    if dprof.status in (DriverStatus.BLOCKED.value, DriverStatus.SUSPICIOUS.value):
+        return False
+    if registration_is_submitted(dprof):
+        return False
+    return True
+
+
+def driver_waiting_admin(dprof: DriverProfile) -> bool:
+    return (
+        dprof.status == DriverStatus.PENDING.value
+        and registration_is_submitted(dprof)
+    )
+
+
+def registration_resume_step(dprof: DriverProfile) -> tuple[str, int]:
+    """FSM state name (DriverRegister attr) and 1-based step number."""
+    route_from, route_to, include_return = parse_draft_route(dprof)
+    if not route_from:
+        return "route_from", 1
+    if not route_to:
+        return "route_to", 2
+    if include_return is None:
+        return "return_route", 3
+    if not (dprof.full_name or "").strip():
+        return "full_name", 4
+    if not (dprof.car_info or "").strip():
+        return "car_info", 5
+    if not (dprof.phone or "").strip():
+        return "phone", 10
+    if not dprof.max_seats or dprof.max_seats <= 0:
+        return "max_seats", 11
+    if dprof.proposed_price_per_seat is None:
+        return "price_per_seat", 11
+    return "route_from", 1
+
+
+def prompt_route_from(*, step: int = 1) -> str:
+    return (
+        f"📝 Регистрация водителя · шаг {step} из {REGISTRATION_TOTAL_STEPS}\n\n"
+        "Напишите только город, откуда вы обычно выезжаете.\n"
+        "Пример: Саратов\n"
+        "Не пишите маршрут целиком (не «Саратов — Сочи»)."
+    )
+
+
+def prompt_route_to(*, step: int = 2) -> str:
+    return (
+        f"📝 Шаг {step} из {REGISTRATION_TOTAL_STEPS}\n\n"
+        "Теперь только город назначения.\n"
+        "Пример: Сочи"
+    )
+
+
+def prompt_registration_intro() -> str:
+    return (
+        "Добро пожаловать! Заполните анкету (~5 минут):\n"
+        "маршрут → ФИО и авто → фото → телефон → тариф.\n"
+        "После отправки администратор проверит данные."
+    )
+
 
 def parse_draft_route(dprof: DriverProfile) -> Tuple[Optional[str], Optional[str], Optional[bool]]:
     route_from = (dprof.current_city or "").strip() or None

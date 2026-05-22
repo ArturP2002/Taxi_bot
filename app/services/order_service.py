@@ -331,6 +331,24 @@ def order_ready_for_dispatch(order: Order) -> bool:
     return True
 
 
+def decline_suggested_assignments(
+    *,
+    order_id: Optional[int] = None,
+    driver_id: Optional[int] = None,
+) -> int:
+    """Cancel stale SUGGESTED rows (e.g. after admin changed driver direction)."""
+    now = datetime.now(timezone.utc)
+    q = OrderDriverAssignment.update(
+        status=AssignmentStatus.DECLINED.value,
+        responded_at=now,
+    ).where(OrderDriverAssignment.status == AssignmentStatus.SUGGESTED.value)
+    if order_id is not None:
+        q = q.where(OrderDriverAssignment.order_id == order_id)
+    if driver_id is not None:
+        q = q.where(OrderDriverAssignment.driver_id == driver_id)
+    return q.execute()
+
+
 def suggest_driver_for_order(order: Order) -> Optional[OrderDriverAssignment]:
     if not order_ready_for_dispatch(order):
         return None
@@ -339,6 +357,9 @@ def suggest_driver_for_order(order: Order) -> Optional[OrderDriverAssignment]:
     from app.services.loading_service import find_best_driver_for_order
 
     drv = find_best_driver_for_order(order, excluded=excluded)
+    if drv and drv.direction_id != order.direction_id:
+        excluded.add(drv.id)
+        drv = find_best_driver_for_order(order, excluded=excluded)
     if drv:
         now = datetime.now(timezone.utc)
         OrderDriverAssignment.update(status=AssignmentStatus.DECLINED.value).where(
@@ -428,6 +449,8 @@ def confirm_suggestion(
     if not can_assign_order(driver, order):
         raise ValueError("capacity_exceeded")
     if order.direction_id != driver.direction_id:
+        decline_suggested_assignments(order_id=order.id)
+        suggest_driver_for_order(order)
         raise ValueError("direction_mismatch")
     if not driver.online:
         raise ValueError("driver_offline")

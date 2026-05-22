@@ -401,11 +401,70 @@ def confirm_passenger_payment_endpoint(
     return {"ok": True}
 
 
+class SplitOrderIn(BaseModel):
+    first_seats: int
+
+
+@router.post("/orders/{order_id}/split")
+def split_order_endpoint(
+    order_id: int, body: SplitOrderIn, user: User = Depends(require_admin)
+) -> Any:
+    """Split overflow order into two (same passenger/route) for manual assign."""
+    from datetime import datetime, timezone
+
+    from app.services import code_service
+
+    o = Order.get_by_id(order_id)
+    if o.status not in (OrderStatus.NEW.value, OrderStatus.ADMIN_REVIEW.value):
+        raise HTTPException(status_code=400, detail="order_not_splittable")
+    first = int(body.first_seats)
+    if first <= 0 or first >= o.seats:
+        raise HTTPException(status_code=400, detail="invalid_split_seats")
+    second = o.seats - first
+    now = datetime.now(timezone.utc)
+    Order.update(
+        seats=first,
+        platform_seats=first,
+        updated_at=now,
+    ).where(Order.id == o.id).execute()
+    o2 = Order.create(
+        direction=o.direction,
+        passenger=o.passenger,
+        from_location=o.from_location,
+        to_location=o.to_location,
+        seats=second,
+        platform_seats=second,
+        phone=o.phone,
+        status=OrderStatus.ADMIN_REVIEW.value,
+        passenger_payment_status=o.passenger_payment_status,
+        confirmation_code_hash="tmp",
+        code_issued_at=now,
+        pickup_location=o.pickup_location,
+        pickup_time_text=o.pickup_time_text,
+        created_at=now,
+        updated_at=now,
+    )
+    Order.update(
+        confirmation_code_hash=code_service.hash_code(o2.id, code_service.generate_six_digit_code()),
+    ).where(Order.id == o2.id).execute()
+    audit_service.log_action(
+        "order_split",
+        actor_telegram_id=user.telegram_id,
+        entity_type="order",
+        entity_id=str(order_id),
+        payload={"first_seats": first, "new_order_id": o2.id},
+    )
+    return {"ok": True, "original_order_id": o.id, "new_order_id": o2.id, "seats": [first, second]}
+
+
 class SuggestionOut(BaseModel):
     assignment_id: int
     driver_id: int
     driver_name: Optional[str]
     driver_online: bool
+    direction_match: bool = True
+    driver_direction_label: Optional[str] = None
+    order_direction_label: Optional[str] = None
 
 
 class OrderOut(BaseModel):
@@ -438,11 +497,22 @@ def _build_suggestion(order_id: int) -> Optional[SuggestionOut]:
     if not ass:
         return None
     drv = DriverProfile.get_by_id(ass.driver_id)
+    order = Order.get_by_id(order_id)
+    order_dir = Direction.get_by_id(order.direction_id)
+    order_label = f"{order_dir.from_label} → {order_dir.to_label}"
+    driver_label = None
+    if drv.direction_id:
+        dd = Direction.get_by_id(drv.direction_id)
+        driver_label = f"{dd.from_label} → {dd.to_label}"
+    match = drv.direction_id == order.direction_id
     return SuggestionOut(
         assignment_id=ass.id,
         driver_id=drv.id,
         driver_name=drv.full_name,
         driver_online=drv.online,
+        direction_match=match,
+        driver_direction_label=driver_label,
+        order_direction_label=order_label,
     )
 
 
@@ -816,31 +886,25 @@ class ApproveDriverIn(BaseModel):
 
 @router.post("/drivers/{driver_id}/approve")
 async def approve_driver(driver_id: int, body: ApproveDriverIn, request: Request, user: User = Depends(require_admin)) -> Any:
+    if body.direction_id is None:
+        raise HTTPException(status_code=400, detail="direction_required")
     d = DriverProfile.get_by_id(driver_id)
     update_fields: dict = {
         "status": DriverStatus.ACTIVE.value,
         "max_seats": body.max_seats,
+        "direction_id": body.direction_id,
     }
-    if body.direction_id is not None:
-        update_fields["direction_id"] = body.direction_id
     DriverProfile.update(**update_fields).where(DriverProfile.id == d.id).execute()
     audit_service.log_action("driver_approve", actor_telegram_id=user.telegram_id, entity_type="driver", entity_id=str(driver_id))
     bot = _bot(request)
     drv_user = User.get_by_id(d.user_id)
-    if body.direction_id is not None:
-        direction = Direction.get_by_id(body.direction_id)
-        msg = (
-            f"✅ Ваша заявка одобрена!\n\n"
-            f"Направление: {direction.from_label} → {direction.to_label}\n"
-            f"Макс. мест: {body.max_seats}\n\n"
-            "Нажмите «🟢 Онлайн» чтобы встать в очередь."
-        )
-    else:
-        msg = (
-            f"✅ Ваша заявка одобрена!\n\n"
-            f"Макс. мест: {body.max_seats}\n\n"
-            "Направление будет назначено позже. Ожидайте."
-        )
+    direction = Direction.get_by_id(body.direction_id)
+    msg = (
+        f"✅ Ваша заявка одобрена!\n\n"
+        f"Направление: {direction.from_label} → {direction.to_label}\n"
+        f"Макс. мест: {body.max_seats}\n\n"
+        "Нажмите «🟢 Онлайн» чтобы встать в очередь."
+    )
     from app.services.admin_notify import notify_driver_approved_welcome
 
     try:
@@ -946,6 +1010,7 @@ async def change_driver_direction(
         queue_service.remove_from_queue(old_dir, drv)
 
     DriverProfile.update(direction_id=new_dir.id).where(DriverProfile.id == drv.id).execute()
+    order_service.decline_suggested_assignments(driver_id=drv.id)
 
     if drv.online:
         queue_service.enqueue_driver_end(new_dir, drv)
@@ -1047,10 +1112,11 @@ def get_queue(direction_id: int) -> Any:
 
 @router.get("/directions/{direction_id}/board")
 def direction_board(direction_id: int) -> Any:
-    from app.services import loading_service
+    from app.services import loading_service, overflow_service
 
     d = Direction.get_by_id(direction_id)
     waiting = loading_service.direction_waiting_pool(direction_id)
+    cap = overflow_service.direction_capacity_info(direction_id)
     loading_cars = [
         loading_service.snapshot_to_dict(s)
         for s in loading_service.drivers_loading_on_direction(direction_id)
@@ -1062,6 +1128,8 @@ def direction_board(direction_id: int) -> Any:
         "waiting": waiting,
         "loading_cars": loading_cars,
         "queue": queue,
+        "max_single_car_seats": cap.max_single_car_seats,
+        "total_available_seats": cap.total_available_seats,
     }
 
 

@@ -170,6 +170,8 @@ def find_best_driver_for_order(
         if snap.driver_id in excluded or snap.free_seats < order.seats:
             continue
         drv = DriverProfile.get_by_id(snap.driver_id)
+        if drv.direction_id != order.direction_id:
+            continue
         if order_service.can_assign_order(drv, order):
             return drv
 
@@ -187,6 +189,8 @@ def find_best_driver_for_order(
     ):
         drv = row.driver
         if drv.id in excluded:
+            continue
+        if drv.direction_id != order.direction_id:
             continue
         if order_service.can_assign_order(drv, order):
             return drv

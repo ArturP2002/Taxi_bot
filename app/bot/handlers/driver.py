@@ -50,6 +50,127 @@ router = Router(name="driver")
 # Exclude menu button labels from FSM text handlers (otherwise "📊 История" becomes a city name).
 _NOT_MENU_TEXT = ~F.text.in_(keyboards.DRIVER_MENU_TEXTS)
 
+_REG_STATES = {
+    "route_from": DriverRegister.route_from,
+    "route_to": DriverRegister.route_to,
+    "return_route": DriverRegister.return_route,
+    "full_name": DriverRegister.full_name,
+    "car_info": DriverRegister.car_info,
+    "phone": DriverRegister.phone,
+    "max_seats": DriverRegister.max_seats,
+}
+
+
+async def begin_driver_registration(message: Message, state: FSMContext) -> None:
+    """Entry: «Я водитель» or incomplete profile — start or resume анкета."""
+    await state.clear()
+    ensure_user(message.from_user, prefer_driver=True)
+    u = User.get(telegram_id=message.from_user.id)
+    dprof = DriverProfile.get(user=u)
+
+    if reg_service.driver_waiting_admin(dprof):
+        await message.answer(
+            "⏳ Анкета уже отправлена — ожидайте подтверждения администратора.\n"
+            "«📞 Связь с админом» — если нужно уточнить данные.",
+            reply_markup=keyboards.main_driver_kb(),
+        )
+        return
+
+    if dprof.status == DriverStatus.ACTIVE.value:
+        from app.bot.messages import send_driver_rules
+
+        await send_driver_rules(message, reply_markup=keyboards.main_driver_kb())
+        return
+
+    if dprof.status == DriverStatus.SUSPICIOUS.value:
+        await message.answer(
+            "⚠️ Аккаунт на проверке администратором.\n"
+            "«📞 Связь с админом» — для разъяснений.",
+            reply_markup=keyboards.main_driver_kb(),
+        )
+        return
+
+    if dprof.status == DriverStatus.BLOCKED.value:
+        await message.answer(
+            "Аккаунт заблокирован. Обратитесь к администратору.",
+            reply_markup=keyboards.main_driver_kb(),
+        )
+        return
+
+    if not reg_service.driver_needs_registration(dprof):
+        from app.bot.messages import send_driver_rules
+
+        await send_driver_rules(message, reply_markup=keyboards.main_driver_kb())
+        return
+
+    await message.answer(reg_service.prompt_registration_intro())
+    await _resume_driver_registration(message, state, dprof)
+
+
+async def _resume_driver_registration(
+    message: Message, state: FSMContext, dprof: DriverProfile
+) -> None:
+    step_name, step_num = reg_service.registration_resume_step(dprof)
+    route_from, route_to, include_return = reg_service.parse_draft_route(dprof)
+    await state.update_data(
+        route_from=route_from or "",
+        route_to=route_to or "",
+        include_return=include_return,
+    )
+    await state.set_state(_REG_STATES[step_name])
+    cancel = f"\n({keyboards.BTN_CANCEL} — выйти в меню)"
+    if step_name == "route_from":
+        text = reg_service.prompt_route_from(step=step_num) + cancel
+        await message.answer(text, reply_markup=keyboards.cancel_kb())
+    elif step_name == "route_to":
+        text = reg_service.prompt_route_to(step=step_num) + cancel
+        await message.answer(text, reply_markup=keyboards.cancel_kb())
+    elif step_name == "return_route":
+        fr = route_from or "?"
+        to = route_to or "?"
+        await message.answer(
+            f"📝 Шаг {step_num} из {reg_service.REGISTRATION_TOTAL_STEPS}\n\n"
+            f"Едете обратно ({to} → {fr})?",
+            reply_markup=keyboards.return_route_kb(),
+        )
+    elif step_name == "full_name":
+        await message.answer(
+            f"📝 Шаг {step_num} из {reg_service.REGISTRATION_TOTAL_STEPS}\n\nФИО:",
+            reply_markup=keyboards.cancel_kb(),
+        )
+    elif step_name == "car_info":
+        await message.answer(
+            f"📝 Шаг {step_num} из {reg_service.REGISTRATION_TOTAL_STEPS}\n\n"
+            "Автомобиль (марка, модель, гос. номер):",
+            reply_markup=keyboards.cancel_kb(),
+        )
+    elif step_name == "phone":
+        await message.answer(
+            f"📝 Шаг {step_num} из {reg_service.REGISTRATION_TOTAL_STEPS}\n\n"
+            "Номер телефона:",
+            reply_markup=keyboards.cancel_kb(),
+        )
+    elif step_name == "max_seats":
+        await message.answer(
+            f"📝 Шаг {step_num} из {reg_service.REGISTRATION_TOTAL_STEPS}\n\n"
+            f"Сколько мест в машине ({keyboards.SEATS_VEHICLE_MIN}–{keyboards.SEATS_VEHICLE_MAX})?",
+            reply_markup=keyboards.cancel_kb(),
+        )
+    else:
+        text = reg_service.prompt_route_from(step=1) + cancel
+        await state.set_state(DriverRegister.route_from)
+        await message.answer(text, reply_markup=keyboards.cancel_kb())
+
+
+async def _start_registration_if_needed(
+    message: Message, state: FSMContext, dprof: DriverProfile
+) -> bool:
+    """Return True if registration was started (caller should stop)."""
+    if not reg_service.driver_needs_registration(dprof):
+        return False
+    await _resume_driver_registration(message, state, dprof)
+    return True
+
 
 def _driver(message: Message) -> DriverProfile:
     u = User.get(telegram_id=message.from_user.id)
@@ -115,13 +236,7 @@ async def go_online(message: Message, state: FSMContext) -> None:
         await message.answer("Вы не водитель.")
         return
     dprof = DriverProfile.get(user=u)
-    if not dprof.full_name:
-        await state.set_state(DriverRegister.route_from)
-        await message.answer(
-            "Сначала заполните анкету. Маршрут — откуда (город):\n"
-            f"({keyboards.BTN_CANCEL} — выйти в меню)",
-            reply_markup=keyboards.cancel_kb(),
-        )
+    if await _start_registration_if_needed(message, state, dprof):
         return
     if dprof.status == DriverStatus.SUSPICIOUS.value:
         await message.answer(
@@ -241,13 +356,7 @@ async def my_order(message: Message, state: FSMContext) -> None:
     if u.role != UserRole.DRIVER.value:
         return
     dprof = DriverProfile.get(user=u)
-    if not dprof.full_name:
-        await state.set_state(DriverRegister.route_from)
-        await message.answer(
-            "Сначала заполните анкету. Маршрут — откуда (город):\n"
-            f"({keyboards.BTN_CANCEL} — выйти в меню)",
-            reply_markup=keyboards.cancel_kb(),
-        )
+    if await _start_registration_if_needed(message, state, dprof):
         return
     p = _pending_assignment(dprof)
     if p:
@@ -310,9 +419,11 @@ async def accept(cb: CallbackQuery, state: FSMContext) -> None:
         if str(e) == "capacity_exceeded":
             from app.bot import messages as bot_messages
             from app.services.admin_notify import notify_sos_overflow
+            from app.services import overflow_service
 
             o = Order.get_by_id(ass.order_id)
             d = Direction.get_by_id(o.direction_id)
+            cap = overflow_service.direction_capacity_info(o.direction_id)
             await notify_sos_overflow(
                 cb.bot,
                 o.id,
@@ -321,6 +432,7 @@ async def accept(cb: CallbackQuery, state: FSMContext) -> None:
                 direction_to=d.to_label,
                 from_loc=o.from_location,
                 to_loc=o.to_location,
+                max_single_car_seats=cap.max_single_car_seats,
             )
             try:
                 await cb.bot.send_message(
@@ -975,18 +1087,29 @@ async def propose_finish(message: Message, state: FSMContext, bot: Bot) -> None:
 
 @router.message(DriverRegister.route_from, F.text, _NOT_MENU_TEXT)
 async def reg_route_from(message: Message, state: FSMContext) -> None:
-    route_from = message.text.strip()
+    ok, result = reg_service.validate_single_city(message.text)
+    if not ok:
+        await message.answer(result, reply_markup=keyboards.cancel_kb())
+        return
+    route_from = result
     await state.update_data(route_from=route_from)
     ensure_user(message.from_user, prefer_driver=True)
     dprof = DriverProfile.get(user=User.get(telegram_id=message.from_user.id))
     reg_service.save_draft_route_from(dprof, route_from)
     await state.set_state(DriverRegister.route_to)
-    await message.answer("Куда (город):")
+    await message.answer(
+        reg_service.prompt_route_to(step=2) + f"\n({keyboards.BTN_CANCEL} — выйти в меню)",
+        reply_markup=keyboards.cancel_kb(),
+    )
 
 
 @router.message(DriverRegister.route_to, F.text, _NOT_MENU_TEXT)
 async def reg_route_to(message: Message, state: FSMContext) -> None:
-    to_city = message.text.strip()
+    ok, result = reg_service.validate_single_city(message.text)
+    if not ok:
+        await message.answer(result, reply_markup=keyboards.cancel_kb())
+        return
+    to_city = result
     data = await state.get_data()
     await state.update_data(route_to=to_city)
     ensure_user(message.from_user, prefer_driver=True)
@@ -1253,7 +1376,8 @@ async def reg_fixed(message: Message, state: FSMContext, bot: Bot) -> None:
         if result == "route_lost":
             await state.set_state(DriverRegister.route_from)
             await message.answer(
-                "Данные маршрута не сохранились. Укажите снова — откуда (город):",
+                reg_service.prompt_route_from(step=1)
+                + f"\n({keyboards.BTN_CANCEL} — выйти в меню)",
                 reply_markup=keyboards.cancel_kb(),
             )
             return

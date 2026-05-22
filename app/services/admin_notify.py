@@ -238,15 +238,26 @@ async def notify_sos_overflow(
     direction_to: str,
     from_loc: str,
     to_loc: str,
+    max_single_car_seats: int = 0,
 ) -> None:
     text = (
-        f"🆘 SOS — ПЕРЕБОР\n"
-        f"Заказ #{order_id}\n"
+        f"🆘 SOS — не влезает в одну машину\n"
+        f"Заказ #{order_id} · {seats} мест\n"
         f"📍 {direction_from} → {direction_to}\n"
         f"Откуда: {from_loc}\n"
         f"Куда: {to_loc}\n"
-        f"Мест: {seats}\n\n"
-        "Нет машины с достаточным числом мест. Пересадите вручную в админке."
+    )
+    if max_single_car_seats > 0:
+        text += (
+            f"\nНа линии максимум {max_single_car_seats} свободных мест "
+            f"в одной машине (нужно {seats}).\n"
+        )
+    else:
+        text += "\nНет машин на линии или все заняты.\n"
+    text += (
+        "\nВ админке: вкладка «Заказы» → «Назначить водителя» "
+        "или «Очередь» → «Назначить» у заявки. "
+        "Можно разбить заказ на два рейса."
     )
     await notify_admins(bot, text)
 

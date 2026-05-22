@@ -27,9 +27,9 @@ async def handle_order_ride(message: Message, state: FSMContext) -> None:
 @router.message(F.text.contains("Я водитель"))
 @router.message(Command("driver"))
 async def handle_driver_mode(message: Message, state: FSMContext) -> None:
-    await state.clear()
-    ensure_user(message.from_user, prefer_driver=True)
-    await send_driver_rules(message, reply_markup=keyboards.main_driver_kb())
+    from app.bot.handlers.driver import begin_driver_registration
+
+    await begin_driver_registration(message, state)
 
 
 @router.message(F.text.contains("Режим пассажира"))
@@ -96,6 +96,11 @@ async def admin_confirm_suggestion(cb: CallbackQuery, bot: Bot) -> None:
             await cb.answer("Водитель ушёл оффлайн", show_alert=True)
         elif reason == "capacity_exceeded":
             await cb.answer("У водителя нет свободных мест", show_alert=True)
+        elif reason == "direction_mismatch":
+            await cb.answer(
+                "Водитель на другом направлении. Назначьте вручную в админке.",
+                show_alert=True,
+            )
         else:
             await cb.answer(f"Ошибка: {reason}", show_alert=True)
         return
