@@ -454,6 +454,12 @@ async def accept(cb: CallbackQuery, state: FSMContext) -> None:
     o = Order.get_by_id(ass.order_id)
     dprof = DriverProfile.get_by_id(ass.driver_id)
     d = Direction.get_by_id(o.direction_id)
+    try:
+        from app.services.boarding_credentials import notify_passenger_driver_assigned
+
+        await notify_passenger_driver_assigned(cb.bot, o, dprof, d)
+    except Exception:
+        pass
     from datetime import datetime, timezone
 
     from app.services.photo_service import new_loading_session_id
@@ -583,8 +589,12 @@ async def start_trip_prompt(message: Message, state: FSMContext) -> None:
     await state.set_state(DriverCode.waiting_code)
     await state.update_data(active_order_id=o.id)
     await message.answer(
-        f"Старт заказа #{o.id}.\n"
-        "Введите 6 цифр кода от пассажира или вставьте QR-токен одним сообщением.",
+        f"Старт заказа #{o.id}.\n\n"
+        "Способы подтверждения:\n"
+        "• Введите 6 цифр кода от пассажира\n"
+        "• Пришлите 📷 фото QR с экрана пассажира\n"
+        "• Отсканируйте QR камерой телефона (откроется бот)\n\n"
+        "Код также виден у пассажира в «🔐 Код и QR».",
         reply_markup=keyboards.cancel_kb(),
     )
 
@@ -601,35 +611,106 @@ async def enter_code(message: Message, state: FSMContext, bot: Bot) -> None:
         await state.clear()
         return
     o = Order.get_by_id(oid)
-    ok, key = order_service.verify_order_code(o, message.text.strip())
+    from app.services import code_service
+
+    ok, key = order_service.verify_order_code(
+        o, message.text.strip(), expected_order_id=oid
+    )
     if not ok:
-        await message.answer(f"Ошибка: {key}")
+        await message.answer(code_service.verification_error_label(key))
         return
     u = User.get(telegram_id=message.from_user.id)
-    dprof = DriverProfile.get(user=u)
-    dprof = DriverProfile.get_by_id(dprof.id)
-    comm = CommissionLedger.select().where(CommissionLedger.order_id == o.id).first()
+    dprof = DriverProfile.get_by_id(DriverProfile.get(user=u).id)
+    await _complete_trip_start(message, state, bot, order=Order.get_by_id(o.id), dprof=dprof)
+
+
+async def _complete_trip_start(
+    message: Message,
+    state: FSMContext,
+    bot: Bot,
+    *,
+    order: Order,
+    dprof: DriverProfile,
+) -> None:
+    from app.models import CommissionLedger
+
+    comm = CommissionLedger.select().where(CommissionLedger.order_id == order.id).first()
     comm_txt = f" Начислена комиссия: {comm.amount} ₽." if comm else ""
-    d = Direction.get_by_id(o.direction_id)
+    d = Direction.get_by_id(order.direction_id)
     await state.clear()
     await message.answer(
-        f"✅ Поездка #{o.id} началась.{comm_txt}\n"
+        f"✅ Поездка #{order.id} началась.{comm_txt}\n"
         f"Маршрут: {d.from_label} → {d.to_label}\n"
-        f"Мест: {o.seats} | Свои: {dprof.own_seats_reserved}\n"
+        f"Мест: {order.seats} | Свои: {dprof.own_seats_reserved}\n"
         f"Долг: {dprof.balance} ₽",
         reply_markup=keyboards.trip_actions_kb(),
     )
     try:
-        await bot.send_message(o.passenger.telegram_id, "Водитель подтвердил код. Приятной поездки!")
+        await bot.send_message(
+            order.passenger.telegram_id,
+            "Водитель подтвердил посадку. Приятной поездки!",
+        )
     except Exception:
         pass
     await notify_trip_started(
-        bot, o.id, dprof.full_name or f"ID:{dprof.id}",
+        bot,
+        order.id,
+        dprof.full_name or f"ID:{dprof.id}",
         route=f"{d.from_label} → {d.to_label}",
-        seats=o.seats,
+        seats=order.seats,
         car_info=dprof.car_info,
         own_seats=int(dprof.own_seats_reserved or 0),
     )
+
+
+@router.message(DriverCode.waiting_code, F.photo | F.document)
+async def enter_code_photo(message: Message, state: FSMContext, bot: Bot) -> None:
+    from app.services import code_service
+
+    data = await state.get_data()
+    oid = data.get("active_order_id")
+    if not oid:
+        await state.clear()
+        return
+    o = Order.get_by_id(oid)
+    u = User.get(telegram_id=message.from_user.id)
+    dprof = DriverProfile.get(user=u)
+
+    if message.photo:
+        file_id = message.photo[-1].file_id
+    elif message.document and (message.document.mime_type or "").startswith("image/"):
+        file_id = message.document.file_id
+    else:
+        await message.answer("Пришлите фото с QR-кодом.")
+        return
+
+    try:
+        tg_file = await bot.get_file(file_id)
+        buf = await bot.download_file(tg_file.file_path)
+        image_bytes = buf.read()
+    except Exception:
+        await message.answer("Не удалось загрузить фото. Попробуйте снова или введите 6 цифр.")
+        return
+
+    payloads = code_service.decode_qr_from_image_bytes(image_bytes)
+    if not payloads:
+        await message.answer(
+            "QR на фото не распознан.\n"
+            "Сделайте чёткий снимок экрана пассажира или введите 6 цифр кода."
+        )
+        return
+
+    last_err = "invalid_format"
+    for raw in payloads:
+        ok, key = order_service.verify_order_code(
+            o, raw, expected_order_id=oid
+        )
+        if ok:
+            dprof = DriverProfile.get_by_id(dprof.id)
+            await _complete_trip_start(message, state, bot, order=Order.get_by_id(o.id), dprof=dprof)
+            return
+        last_err = key
+    await message.answer(code_service.verification_error_label(last_err))
 
 
 @router.message(F.text == "🔁 Встать обратно")

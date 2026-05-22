@@ -1,11 +1,9 @@
-import io
 from datetime import datetime, timezone
 
-import qrcode
 from aiogram import Router, F, Bot
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
-from aiogram.types import Message, CallbackQuery, BufferedInputFile
+from aiogram.types import Message, CallbackQuery
 
 from app.bot import keyboards
 from app.bot.states import PassengerOrder, RelayChat, AdminRelayChat
@@ -19,6 +17,10 @@ from app.services import direction_search
 from app.services.admin_notify import notify_new_order
 from app.services import passenger_payment_service
 from app.services import admin_relay
+from app.services.boarding_credentials import (
+    send_passenger_boarding_credentials,
+    boarding_code_for_order,
+)
 
 router = Router(name="passenger")
 
@@ -167,22 +169,16 @@ async def phone_enter(message: Message, state: FSMContext, bot: Bot) -> None:
         confirmation_code_hash="tmp",
         code_issued_at=now,
     )
-    Order.update(confirmation_code_hash=code_service.hash_code(order.id, code)).where(Order.id == order.id).execute()
+    code_service.persist_boarding_code(order.id, code)
     order = Order.get_by_id(order.id)
-    token = code_service.build_qr_token(order.id)
-
-    qr = qrcode.make(token)
-    buf = io.BytesIO()
-    qr.save(buf, format="PNG")
-    buf.seek(0)
     from app.services import loading_service
 
     pool = loading_service.direction_waiting_pool(direction.id)
     loading_cars = loading_service.drivers_loading_on_direction(direction.id)
     caption = (
-        bot_messages.format_order_summary(order, direction, extra=f"Код: {code}")
+        bot_messages.format_order_summary(order, direction)
         + "\n\n"
-        "Назовите код водителю при посадке или покажите QR.\n"
+        "Код и QR отправлены отдельными сообщениями ниже.\n"
         "«📞 Связь с водителем» — после назначения. «📞 Связь с админом» — в любой момент."
     )
     if loading_cars:
@@ -205,10 +201,9 @@ async def phone_enter(message: Message, state: FSMContext, bot: Bot) -> None:
         caption += f"\n\nОплата онлайн: {fare} ₽ (до подтверждения админом)."
         extra_kb = keyboards.passenger_pay_inline(order.id)
 
-    await message.answer_photo(
-        BufferedInputFile(buf.read(), filename="qr.png"),
-        caption=caption,
-        reply_markup=extra_kb or keyboards.main_passenger_kb(),
+    await message.answer(caption, reply_markup=extra_kb or keyboards.main_passenger_kb())
+    await send_passenger_boarding_credentials(
+        bot, order, code=code, direction=direction
     )
 
     if order.status == OrderStatus.ADMIN_REVIEW.value:
@@ -283,6 +278,49 @@ async def pay_check(cb: CallbackQuery) -> None:
     }
     await cb.message.answer(msgs.get(status, status))
     await cb.answer()
+
+
+def _active_boarding_order(user) -> Order | None:
+    from app.models import User
+
+    u = User.get(telegram_id=user.id)
+    for st in (
+        OrderStatus.NEW.value,
+        OrderStatus.ASSIGNED.value,
+        OrderStatus.AWAITING_PAYMENT.value,
+        OrderStatus.ADMIN_REVIEW.value,
+    ):
+        o = (
+            Order.select()
+            .where((Order.passenger_id == u.id) & (Order.status == st))
+            .order_by(Order.id.desc())
+            .first()
+        )
+        if o and not o.code_consumed_at:
+            return o
+    return None
+
+
+@router.message(F.text == keyboards.BTN_BOARDING_CODE)
+async def resend_boarding_code(message: Message, bot: Bot) -> None:
+    ensure_user(message.from_user)
+    o = _active_boarding_order(message.from_user)
+    if not o:
+        await message.answer(
+            "Нет активного заказа. Сначала оформите поездку или дождитесь назначения."
+        )
+        return
+    if not boarding_code_for_order(o):
+        from app.services.boarding_credentials import issue_and_send_new_credentials
+
+        await issue_and_send_new_credentials(bot, o)
+        await message.answer("Сгенерирован новый код (старый QR больше не действует).")
+        return
+    ok = await send_passenger_boarding_credentials(bot, o)
+    if ok:
+        await message.answer(f"Код и QR для заказа #{o.id} отправлены выше.")
+    else:
+        await message.answer("Не удалось отправить код. Обратитесь к администратору.")
 
 
 def _contactable_order(user) -> Order | None:

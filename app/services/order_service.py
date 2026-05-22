@@ -190,7 +190,12 @@ def get_accepted_assignment(order: Order) -> Optional[OrderDriverAssignment]:
     )
 
 
-def verify_order_code(order: Order, code_or_token: str) -> Tuple[bool, str]:
+def verify_order_code(
+    order: Order,
+    code_or_token: str,
+    *,
+    expected_order_id: Optional[int] = None,
+) -> Tuple[bool, str]:
     if order.code_consumed_at:
         return False, "already_used"
     ass = get_accepted_assignment(order)
@@ -199,15 +204,26 @@ def verify_order_code(order: Order, code_or_token: str) -> Tuple[bool, str]:
     if order.status != OrderStatus.ASSIGNED.value:
         return False, "bad_status"
 
-    raw = code_or_token.strip()
-    order_id = order.id
-    if len(raw) > 6:
-        oid = code_service.verify_qr_token(raw)
-        if oid != order_id:
+    parsed = code_service.parse_verification_raw(
+        code_or_token,
+        default_order_id=expected_order_id or order.id,
+    )
+    if not parsed:
+        return False, "invalid_format"
+    if parsed.order_id != order.id:
+        return False, "wrong_order"
+
+    if parsed.source == "jwt":
+        oid = code_service.verify_qr_token(code_or_token.strip())
+        if oid != order.id:
             return False, "invalid_token"
-    else:
-        if not code_service.verify_code(order_id, raw, order.confirmation_code_hash):
+    elif parsed.code:
+        if not code_service.verify_code(
+            order.id, parsed.code, order.confirmation_code_hash
+        ):
             return False, "invalid_code"
+    else:
+        return False, "invalid_format"
 
     driver = DriverProfile.get_by_id(ass.driver_id)
     now = datetime.now(timezone.utc)
@@ -215,6 +231,7 @@ def verify_order_code(order: Order, code_or_token: str) -> Tuple[bool, str]:
         status=OrderStatus.IN_PROGRESS.value,
         code_consumed_at=now,
         started_at=now,
+        boarding_code=None,
         updated_at=now,
     ).where(Order.id == order.id).execute()
     commission_service.record_commission(order, driver, on_start=True)

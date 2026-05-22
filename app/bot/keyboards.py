@@ -17,6 +17,8 @@ SEATS_ORDER_MAX = 8
 SEATS_VEHICLE_MIN = 1
 SEATS_VEHICLE_MAX = 8
 
+BTN_BOARDING_CODE = "🔐 Код и QR"
+
 # Reply-keyboard labels: must not be captured by FSM text steps (registration, propose route, etc.)
 DRIVER_MENU_TEXTS: frozenset[str] = frozenset({
     "🟢 Онлайн",
@@ -42,12 +44,14 @@ DRIVER_MENU_TEXTS: frozenset[str] = frozenset({
     BTN_ORDER_RIDE,
     BTN_DRIVER_MODE,
     "📞 Связь с водителем",
+    BTN_BOARDING_CODE,
 })
 
 
 def main_passenger_kb() -> ReplyKeyboardMarkup:
     b = ReplyKeyboardBuilder()
     b.button(text=BTN_ORDER_RIDE)
+    b.button(text=BTN_BOARDING_CODE)
     b.button(text="📞 Связь с водителем")
     b.button(text="📞 Связь с админом")
     b.button(text=BTN_DRIVER_MODE)

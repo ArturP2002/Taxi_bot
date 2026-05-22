@@ -98,6 +98,12 @@ MIGRATIONS: list[tuple[str, list[str]]] = [
             "ALTER TABLE driver_profiles ADD COLUMN registration_submitted_at TEXT",
         ],
     ),
+    (
+        "20260522_v7_boarding_code",
+        [
+            "ALTER TABLE orders ADD COLUMN boarding_code VARCHAR(6)",
+        ],
+    ),
 ]
 
 

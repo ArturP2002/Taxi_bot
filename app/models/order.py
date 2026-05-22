@@ -55,6 +55,7 @@ class Order(BaseModel):
         max_length=32, default=PassengerPaymentStatus.NOT_REQUIRED.value
     )
     confirmation_code_hash = TextField()
+    boarding_code = CharField(max_length=6, null=True)
     code_issued_at = DateTimeField(null=True)
     code_consumed_at = DateTimeField(null=True)
     started_at = DateTimeField(null=True)

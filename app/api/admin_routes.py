@@ -413,6 +413,7 @@ def split_order_endpoint(
     from datetime import datetime, timezone
 
     from app.services import code_service
+    from app.services.boarding_credentials import boarding_code_for_order
 
     o = Order.get_by_id(order_id)
     if o.status not in (OrderStatus.NEW.value, OrderStatus.ADMIN_REVIEW.value):
@@ -427,6 +428,7 @@ def split_order_endpoint(
         platform_seats=first,
         updated_at=now,
     ).where(Order.id == o.id).execute()
+    code2 = code_service.generate_six_digit_code()
     o2 = Order.create(
         direction=o.direction,
         passenger=o.passenger,
@@ -438,15 +440,18 @@ def split_order_endpoint(
         status=OrderStatus.ADMIN_REVIEW.value,
         passenger_payment_status=o.passenger_payment_status,
         confirmation_code_hash="tmp",
+        boarding_code=code2,
         code_issued_at=now,
         pickup_location=o.pickup_location,
         pickup_time_text=o.pickup_time_text,
         created_at=now,
         updated_at=now,
     )
-    Order.update(
-        confirmation_code_hash=code_service.hash_code(o2.id, code_service.generate_six_digit_code()),
-    ).where(Order.id == o2.id).execute()
+    code_service.persist_boarding_code(o2.id, code2)
+    o = Order.get_by_id(o.id)
+    if not boarding_code_for_order(o):
+        code1 = code_service.generate_six_digit_code()
+        code_service.persist_boarding_code(o.id, code1)
     audit_service.log_action(
         "order_split",
         actor_telegram_id=user.telegram_id,
@@ -584,17 +589,9 @@ async def assign_order(
     except Exception:
         pass
     try:
-        from app.bot import messages as bot_messages
+        from app.services.boarding_credentials import notify_passenger_driver_assigned
 
-        await bot.send_message(
-            o.passenger.telegram_id,
-            bot_messages.format_order_summary(
-                o,
-                d,
-                driver_name=drv.full_name,
-                extra=bot_messages.PASSENGER_BOARDING_CHECKLIST,
-            ),
-        )
+        await notify_passenger_driver_assigned(bot, o, drv, d)
     except Exception:
         pass
     try:
@@ -660,11 +657,9 @@ async def confirm_suggestion_endpoint(
     except Exception:
         pass
     try:
-        await bot.send_message(
-            o.passenger.telegram_id,
-            f"Водитель назначен по заказу #{o.id}.\n"
-            f"Подача: {body.pickup_location or '—'} {body.pickup_time_text or ''}",
-        )
+        from app.services.boarding_credentials import notify_passenger_driver_assigned
+
+        await notify_passenger_driver_assigned(bot, o, drv, d)
     except Exception:
         pass
     return {"assignment_id": confirmed.id}

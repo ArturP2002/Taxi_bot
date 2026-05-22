@@ -41,8 +41,15 @@ async def handle_passenger_mode(message: Message, state: FSMContext) -> None:
 
 
 @router.message(CommandStart())
-async def cmd_start(message: Message) -> None:
+async def cmd_start(message: Message, state: FSMContext, bot: Bot) -> None:
     ensure_user(message.from_user)
+    args = (message.text or "").split(maxsplit=1)
+    if len(args) > 1 and args[1].lower().startswith("vc"):
+        from app.bot.handlers.boarding import try_verify_from_deeplink
+
+        if await try_verify_from_deeplink(message, state, bot, args[1]):
+            return
+    await state.clear()
     await message.answer(
         "Междугороднее такси. Выберите действие:",
         reply_markup=keyboards.main_passenger_kb(),
@@ -124,10 +131,9 @@ async def admin_confirm_suggestion(cb: CallbackQuery, bot: Bot) -> None:
         pass
 
     try:
-        await bot.send_message(
-            order.passenger.telegram_id,
-            bot_messages.format_order_summary(order, d, extra=bot_messages.PASSENGER_BOARDING_CHECKLIST),
-        )
+        from app.services.boarding_credentials import notify_passenger_driver_assigned
+
+        await notify_passenger_driver_assigned(bot, order, driver, d)
     except Exception:
         pass
 
