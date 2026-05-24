@@ -805,10 +805,9 @@ def list_drivers() -> Any:
                 order_cancellations_30d=stats["order_cancellations"],
                 trips_completed_30d=stats["trips_completed"],
                 risk_label=stats["risk_label"],
-                registration_submitted=bool(
-                    (d.phone or "").strip()
-                    and (d.full_name or "").strip()
-                    and d.status == DriverStatus.PENDING.value
+                registration_submitted=(
+                    d.status == DriverStatus.PENDING.value
+                    and driver_registration.registration_is_submitted(d)
                 ),
             )
         )

@@ -262,11 +262,14 @@ function photoKindLabel(kind) {
 function escapeHtml(s) {
   return String(s || '').replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 }
+function esc(s) {
+  return escapeHtml(s);
+}
 
 function isDriverRegistrationComplete(d) {
   if (d.registration_submitted === true) return true;
   if (d.registration_submitted === false) return false;
-  return !!(d.phone && d.full_name);
+  return !!(d.phone && d.full_name && d.car_info);
 }
 
 function fetchAuthBlob(path) {

@@ -40,6 +40,7 @@ class DriverProfile(BaseModel):
     rest_until = DateTimeField(null=True)
     offer_accepted_at = DateTimeField(null=True)
     registration_welcome_sent = BooleanField(default=False)
+    registration_submitted_at = DateTimeField(null=True)
     created_at = DateTimeField(default=utcnow)
     updated_at = DateTimeField(null=True)
 
