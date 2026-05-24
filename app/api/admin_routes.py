@@ -1635,6 +1635,177 @@ def list_audit(limit: int = 50) -> Any:
     ]
 
 
+class ScheduledTripOut(BaseModel):
+    id: int
+    direction_id: int
+    from_label: str
+    to_label: str
+    departure_at: str
+    seats_total: int
+    seats_booked: int
+    status: str
+    driver_id: Optional[int] = None
+    driver_name: Optional[str] = None
+    created_by: str
+    note: Optional[str] = None
+
+
+class ScheduledTripCreate(BaseModel):
+    direction_id: int
+    departure_at: str
+    seats_total: int
+    driver_id: Optional[int] = None
+    status: str = "open"
+    note: Optional[str] = None
+
+
+class ScheduledTripPatch(BaseModel):
+    departure_at: Optional[str] = None
+    seats_total: Optional[int] = None
+    status: Optional[str] = None
+    driver_id: Optional[int] = None
+    note: Optional[str] = None
+
+
+def _trip_out(t) -> ScheduledTripOut:
+    d = Direction.get_by_id(t.direction_id)
+    drv_name = None
+    if t.driver_id:
+        try:
+            drv = DriverProfile.get_by_id(t.driver_id)
+            drv_name = drv.full_name
+        except Exception:
+            pass
+    dep = t.departure_at
+    return ScheduledTripOut(
+        id=t.id,
+        direction_id=t.direction_id,
+        from_label=d.from_label,
+        to_label=d.to_label,
+        departure_at=str(dep),
+        seats_total=int(t.seats_total),
+        seats_booked=int(t.seats_booked or 0),
+        status=t.status,
+        driver_id=t.driver_id,
+        driver_name=drv_name,
+        created_by=t.created_by,
+        note=t.note,
+    )
+
+
+@router.get("/scheduled-trips", response_model=List[ScheduledTripOut])
+def list_scheduled_trips(
+    direction_id: Optional[int] = None,
+    status: Optional[str] = None,
+    date_from: Optional[str] = None,
+    date_to: Optional[str] = None,
+) -> Any:
+    from app.models.scheduled_trip import ScheduledTrip
+
+    q = ScheduledTrip.select().order_by(ScheduledTrip.departure_at)
+    if direction_id:
+        q = q.where(ScheduledTrip.direction_id == direction_id)
+    if status:
+        q = q.where(ScheduledTrip.status == status)
+    rows = list(q)
+    if date_from:
+        df = datetime.fromisoformat(date_from.replace("Z", "+00:00"))
+        rows = [r for r in rows if r.departure_at >= df]
+    if date_to:
+        dt = datetime.fromisoformat(date_to.replace("Z", "+00:00"))
+        rows = [r for r in rows if r.departure_at <= dt]
+    return [_trip_out(t) for t in rows]
+
+
+@router.post("/scheduled-trips", response_model=ScheduledTripOut)
+def create_scheduled_trip(body: ScheduledTripCreate, user: User = Depends(require_admin)) -> Any:
+    from app.services import scheduled_trip_service
+    from app.models.scheduled_trip import ScheduledTripCreatedBy
+
+    dep = datetime.fromisoformat(body.departure_at.replace("Z", "+00:00"))
+    if dep.tzinfo is None:
+        dep = dep.replace(tzinfo=timezone.utc)
+    t = scheduled_trip_service.create_trip(
+        direction_id=body.direction_id,
+        departure_at=dep,
+        seats_total=body.seats_total,
+        driver_id=body.driver_id,
+        created_by=ScheduledTripCreatedBy.ADMIN.value,
+        note=body.note,
+        status=body.status,
+    )
+    audit_service.log_action(
+        "scheduled_trip_created",
+        actor_telegram_id=user.telegram_id,
+        entity_type="scheduled_trip",
+        entity_id=str(t.id),
+    )
+    return _trip_out(t)
+
+
+@router.patch("/scheduled-trips/{trip_id}", response_model=ScheduledTripOut)
+def patch_scheduled_trip(
+    trip_id: int, body: ScheduledTripPatch, user: User = Depends(require_admin)
+) -> Any:
+    from app.models.scheduled_trip import ScheduledTrip
+
+    t = ScheduledTrip.get_by_id(trip_id)
+    updates = body.model_dump(exclude_unset=True)
+    if "departure_at" in updates and updates["departure_at"]:
+        dep = datetime.fromisoformat(updates["departure_at"].replace("Z", "+00:00"))
+        if dep.tzinfo is None:
+            dep = dep.replace(tzinfo=timezone.utc)
+        updates["departure_at"] = dep
+    if updates:
+        updates["updated_at"] = datetime.now(timezone.utc)
+        ScheduledTrip.update(**updates).where(ScheduledTrip.id == trip_id).execute()
+    audit_service.log_action(
+        "scheduled_trip_patch",
+        actor_telegram_id=user.telegram_id,
+        entity_type="scheduled_trip",
+        entity_id=str(trip_id),
+        payload=updates,
+    )
+    return _trip_out(ScheduledTrip.get_by_id(trip_id))
+
+
+@router.delete("/scheduled-trips/{trip_id}")
+def delete_scheduled_trip(trip_id: int, user: User = Depends(require_admin)) -> Any:
+    from app.models.scheduled_trip import ScheduledTrip, ScheduledTripStatus
+
+    ScheduledTrip.update(
+        status=ScheduledTripStatus.CANCELLED.value,
+        updated_at=datetime.now(timezone.utc),
+    ).where(ScheduledTrip.id == trip_id).execute()
+    audit_service.log_action(
+        "scheduled_trip_cancelled",
+        actor_telegram_id=user.telegram_id,
+        entity_type="scheduled_trip",
+        entity_id=str(trip_id),
+    )
+    return {"ok": True}
+
+
+@router.post("/scheduled-trips/{trip_id}/assign-driver")
+def assign_trip_driver(
+    trip_id: int, driver_id: int = Query(...), user: User = Depends(require_admin)
+) -> Any:
+    from app.models.scheduled_trip import ScheduledTrip
+
+    DriverProfile.get_by_id(driver_id)
+    ScheduledTrip.update(driver_id=driver_id, updated_at=datetime.now(timezone.utc)).where(
+        ScheduledTrip.id == trip_id
+    ).execute()
+    audit_service.log_action(
+        "scheduled_trip_assign_driver",
+        actor_telegram_id=user.telegram_id,
+        entity_type="scheduled_trip",
+        entity_id=str(trip_id),
+        payload={"driver_id": driver_id},
+    )
+    return _trip_out(ScheduledTrip.get_by_id(trip_id))
+
+
 @router.get("/commissions")
 def list_commissions(limit: int = 50) -> Any:
     from app.models import CommissionLedger

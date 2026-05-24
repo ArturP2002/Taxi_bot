@@ -105,6 +105,7 @@
     <button class="tab-btn" data-tab="directions">Маршруты</button>
     <button class="tab-btn" data-tab="queue">Очередь</button>
     <button class="tab-btn" data-tab="proposals">Заявки</button>
+    <button class="tab-btn" data-tab="calendar">Календарь</button>
     <button class="tab-btn" data-tab="payments">Оплаты</button>
     <button class="tab-btn" data-tab="audit">Журнал</button>
   </div>
@@ -514,6 +515,7 @@ function renderTab(tab) {
     directions: renderDirections,
     queue: renderQueue,
     proposals: renderProposals,
+    calendar: renderCalendar,
     payments: renderPayments,
     audit: renderAudit
   };
@@ -541,6 +543,10 @@ function queueDriverStatus(q) {
 
 function h(tag, cls, inner) { return '<' + tag + (cls ? ' class="' + cls + '"' : '') + '>' + (inner || '') + '</' + tag + '>'; }
 function row(label, value) { return '<div class="row"><span class="lbl">' + label + '</span><span class="val">' + value + '</span></div>'; }
+function tgLink(tid, label) {
+  if (!tid) return esc(label || '—');
+  return '<a href="tg://user?id=' + tid + '" style="color:var(--info)">' + esc(label || ('TG ' + tid)) + '</a>';
+}
 function badge(status) { return '<span class="badge b-' + status + '">' + statusLabel(status) + '</span>'; }
 function cardStart(title, status) { return '<div class="card"><div class="card-header"><span class="card-title">' + title + '</span>' + (status ? badge(status) : '') + '</div>'; }
 function cardEnd() { return '</div>'; }
@@ -905,7 +911,7 @@ function renderDrivers() {
         for (var j = 0; j < directions.length; j++) { if (directions[j].id === d.direction_id) { dir = directions[j]; break; } }
         var dirName = dir ? (dir.from_label + ' → ' + dir.to_label) : '—';
         html += cardStart(d.full_name || 'Без имени (ID:' + d.id + ')', d.status);
-        html += row('TG ID', d.telegram_id);
+        html += row('TG ID', tgLink(d.telegram_id, 'TG ' + d.telegram_id));
         html += row('Направление', dirName);
         html += row('Макс. мест', d.max_seats);
         html += row('Долг', d.balance + ' ₽');
@@ -1464,6 +1470,72 @@ function doConfirmPayment(paymentId) {
 }
 
 
+
+function renderCalendar() {
+  Promise.all([api('/api/admin/scheduled-trips'), api('/api/admin/directions'), api('/api/admin/drivers')])
+    .then(function(results) {
+      var trips = ensureArray(results[0]);
+      var directions = ensureArray(results[1]);
+      var drivers = ensureArray(results[2]);
+      cache.scheduledTrips = trips;
+      var html = '<div class="card"><div class="card-title">Новый рейс</div>';
+      html += '<div class="form-group"><label>Направление</label><select id="st-dir">';
+      for (var di = 0; di < directions.length; di++) {
+        var dr = directions[di];
+        html += '<option value="' + dr.id + '">' + esc(dr.from_label + ' → ' + dr.to_label) + '</option>';
+      }
+      html += '</select></div>';
+      html += '<div class="form-group"><label>Дата и время (ISO)</label><input id="st-dep" placeholder="2026-05-25T08:00:00+00:00"/></div>';
+      html += '<div class="form-group"><label>Мест</label><input id="st-seats" type="number" value="6"/></div>';
+      html += '<div class="form-group"><label>Водитель</label><select id="st-driver"><option value="">—</option>';
+      for (var vi = 0; vi < drivers.length; vi++) {
+        var dv = drivers[vi];
+        if (dv.status === 'active') html += '<option value="' + dv.id + '">' + esc(dv.full_name || dv.id) + '</option>';
+      }
+      html += '</select></div>';
+      html += '<div class="actions"><button class="btn btn-gold" onclick="createScheduledTrip()">Создать рейс</button></div></div>';
+      if (!trips.length) {
+        html += '<div class="empty">Нет запланированных рейсов</div>';
+        content.innerHTML = html;
+        return;
+      }
+      for (var ti = 0; ti < trips.length; ti++) {
+        var t = trips[ti];
+        var free = Math.max(0, (t.seats_total || 0) - (t.seats_booked || 0));
+        html += cardStart(t.from_label + ' → ' + t.to_label, t.status);
+        html += row('Выезд', (t.departure_at || '').slice(0, 16));
+        html += row('Места', (t.seats_booked || 0) + ' / ' + t.seats_total + ' (свободно ' + free + ')');
+        if (t.driver_name) html += row('Водитель', esc(t.driver_name));
+        html += row('Создан', t.created_by || '—');
+        if (t.status === 'open' || t.status === 'full') {
+          html += '<div class="actions"><button class="btn btn-danger" onclick="cancelScheduledTrip(' + t.id + ')">Отменить</button></div>';
+        }
+        html += cardEnd();
+      }
+      content.innerHTML = html;
+    }).catch(function(e) { content.innerHTML = '<div class="empty">Ошибка: ' + e.message + '</div>'; });
+}
+
+function createScheduledTrip() {
+  var body = {
+    direction_id: +document.getElementById('st-dir').value,
+    departure_at: document.getElementById('st-dep').value.trim(),
+    seats_total: +document.getElementById('st-seats').value || 6,
+    driver_id: document.getElementById('st-driver').value ? +document.getElementById('st-driver').value : null,
+    status: 'open'
+  };
+  if (!body.departure_at) { toast('Укажите дату выезда'); return; }
+  api('/api/admin/scheduled-trips', { method: 'POST', body: JSON.stringify(body) })
+    .then(function() { toast('Рейс создан'); renderCalendar(); })
+    .catch(function(e) { toast('Ошибка: ' + e.message); });
+}
+
+function cancelScheduledTrip(id) {
+  if (!confirm('Отменить рейс #' + id + '?')) return;
+  api('/api/admin/scheduled-trips/' + id, { method: 'DELETE' })
+    .then(function() { toast('Отменён'); renderCalendar(); })
+    .catch(function(e) { toast('Ошибка: ' + e.message); });
+}
 
 function renderAudit() {
   api('/api/admin/audit?limit=80').then(function(rows) {

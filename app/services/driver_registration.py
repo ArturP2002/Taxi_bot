@@ -13,7 +13,7 @@ from app.services.admin_notify import notify_driver_registered, notify_proposal
 
 logger = logging.getLogger("taxi_bot.driver_registration")
 
-REGISTRATION_TOTAL_STEPS = 12
+REGISTRATION_TOTAL_STEPS = 11
 
 _ROUTE_SEPARATORS = ("→", "->", "—", "–", " - ", " – ", " — ")
 
@@ -111,10 +111,18 @@ def prompt_route_to(*, step: int = 2) -> str:
 
 def prompt_registration_intro() -> str:
     return (
-        "Добро пожаловать! Заполните анкету (~5 минут):\n"
-        "маршрут → ФИО и авто → фото → телефон → тариф.\n"
+        f"📝 Регистрация водителя · шаг 1 из {REGISTRATION_TOTAL_STEPS}\n\n"
+        "Анкета (~5 мин): маршрут → ФИО и авто → фото (6 кадров) → "
+        "телефон → места → тариф.\n"
         "После отправки администратор проверит данные."
     )
+
+
+REGISTRATION_PHOTOS_HINT = (
+    "📷 Фото автомобиля (по одному сообщению):\n"
+    "1) спереди  2) сзади  3) слева  4) справа  5) салон  6) салон доп.\n\n"
+    "Отправьте первое — кузов спереди:"
+)
 
 
 def parse_draft_route(dprof: DriverProfile) -> Tuple[Optional[str], Optional[str], Optional[bool]]:
@@ -192,9 +200,7 @@ async def finalize_driver_registration(
         return False, "route_lost"
 
     max_seats = int(merged.get("max_seats") or dprof.max_seats or keyboards.SEATS_VEHICLE_MAX)
-    own_seats = int(merged.get("own_seats", dprof.own_seats_reserved or 0))
-    if own_seats >= max_seats:
-        return False, f"own_seats:{max_seats}"
+    own_seats = 0
 
     try:
         price = Decimal(str(merged.get("price_per_seat", dprof.proposed_price_per_seat or "0")))
@@ -273,13 +279,15 @@ async def finalize_driver_registration(
         logger.exception("create_paired_proposals failed for driver %s: %s", dprof.id, e)
         proposal_error = str(e)
 
-    from app.bot.messages import DRIVER_LAUNCH_MESSAGE
+    from app.bot.messages import DRIVER_POST_REGISTRATION_WELCOME
     from app.services.photo_service import send_registration_album_to_admins
-
-    try:
-        await bot.send_message(telegram_id, DRIVER_LAUNCH_MESSAGE)
-    except Exception as e:
-        logger.warning("Launch message failed for %s: %s", telegram_id, e)
+    if not getattr(dprof, "registration_welcome_sent", False):
+        try:
+            await bot.send_message(telegram_id, DRIVER_POST_REGISTRATION_WELCOME)
+            dprof.registration_welcome_sent = True
+            dprof.save()
+        except Exception as e:
+            logger.warning("Welcome message failed for %s: %s", telegram_id, e)
     try:
         await send_registration_album_to_admins(
             bot,
@@ -298,7 +306,7 @@ async def finalize_driver_registration(
         f"ФИО: {full_name}\n"
         f"Авто: {car_info or '—'}\n"
         f"Тел: {phone or '—'}\n"
-        f"Мест: {max_seats} (своих: {own_seats})\n"
+        f"Мест: {max_seats}\n"
         f"Тариф: {price} ₽/место + {fixed} ₽ фикс\n\n"
         "Ожидайте подтверждения. «📞 Связь с админом» — в любой момент."
     )

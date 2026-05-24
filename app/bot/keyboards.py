@@ -1,4 +1,5 @@
-from typing import List, Optional
+from datetime import date
+from typing import List, Optional, Set
 
 from aiogram.types import ReplyKeyboardMarkup, InlineKeyboardMarkup
 from aiogram.utils.keyboard import ReplyKeyboardBuilder, InlineKeyboardBuilder
@@ -34,6 +35,8 @@ DRIVER_MENU_TEXTS: frozenset[str] = frozenset({
     "😴 Отдых",
     "🧭 Направление",
     "📞 Связь с админом",
+    "📅 Мои рейсы",
+    "➕ Объявить рейс",
     BTN_PASSENGER_MODE,
     "▶️ Старт поездки",
     "📲 Посадка (код/QR)",
@@ -75,6 +78,8 @@ def main_driver_kb() -> ReplyKeyboardMarkup:
     b.button(text="➕ Предложить маршрут")
     b.button(text="😴 Отдых")
     b.button(text="🧭 Направление")
+    b.button(text="📅 Мои рейсы")
+    b.button(text="➕ Объявить рейс")
     b.button(text="📞 Связь с админом")
     b.button(text=BTN_PASSENGER_MODE)
     b.adjust(2)
@@ -206,6 +211,77 @@ def passenger_pay_inline(order_id: int) -> InlineKeyboardMarkup:
     ib = InlineKeyboardBuilder()
     ib.button(text="💳 Оплатить онлайн", callback_data=f"pay:{order_id}")
     ib.button(text="🔍 Проверить оплату", callback_data=f"paycheck:{order_id}")
+    ib.adjust(1)
+    return ib.as_markup()
+
+
+def driver_offer_consent_kb(agreed: bool, offer_url: str) -> InlineKeyboardMarkup:
+    ib = InlineKeyboardBuilder()
+    if offer_url.strip():
+        ib.button(text="📄 Оферта", url=offer_url.strip())
+    label = "☑ Согласен" if agreed else "Согласен"
+    ib.button(text=label, callback_data="offer_toggle")
+    ib.button(text="Продолжить", callback_data="offer_continue")
+    ib.adjust(1)
+    return ib.as_markup()
+
+
+def contact_user_inline(telegram_id: int, label: str = "💬 Написать") -> InlineKeyboardMarkup:
+    from app.util.telegram_links import user_chat_url
+
+    ib = InlineKeyboardBuilder()
+    ib.button(text=label, url=user_chat_url(telegram_id))
+    return ib.as_markup()
+
+
+def contact_admins_inline(admin_ids: frozenset[int]) -> InlineKeyboardMarkup:
+    from app.util.telegram_links import user_chat_url
+
+    ib = InlineKeyboardBuilder()
+    for i, tid in enumerate(sorted(admin_ids)):
+        ib.button(text=f"💬 Админ {i + 1}", url=user_chat_url(tid))
+    ib.adjust(1)
+    return ib.as_markup()
+
+
+def trip_calendar_kb(
+    year: int,
+    month: int,
+    *,
+    available_dates: Set[date],
+    direction_id: int,
+) -> InlineKeyboardMarkup:
+    """Dates with open trips + month navigation."""
+    ib = InlineKeyboardBuilder()
+    ib.button(text="⚡ Ближайший рейс", callback_data=f"tcal:asap:{direction_id}")
+    ib.adjust(1)
+    month_dates = sorted(d for d in available_dates if d.year == year and d.month == month)
+    for d in month_dates:
+        ib.button(
+            text=d.strftime("%d.%m"),
+            callback_data=f"tcal:day:{direction_id}:{d.isoformat()}",
+        )
+    if month_dates:
+        ib.adjust(4)
+    prev_m, prev_y = (month - 1, year) if month > 1 else (12, year - 1)
+    next_m, next_y = (month + 1, year) if month < 12 else (1, year + 1)
+    ib.button(text="◀", callback_data=f"tcal:nav:{direction_id}:{prev_y}-{prev_m:02d}")
+    ib.button(text=f"{month:02d}.{year}", callback_data="tcal:noop")
+    ib.button(text="▶", callback_data=f"tcal:nav:{direction_id}:{next_y}-{next_m:02d}")
+    ib.adjust(3)
+    return ib.as_markup()
+
+
+def scheduled_trips_pick_kb(trips: list) -> InlineKeyboardMarkup:
+    ib = InlineKeyboardBuilder()
+    for t in trips:
+        dep = t.departure_at
+        label = dep.strftime("%d.%m %H:%M") if hasattr(dep, "strftime") else str(dep)
+        free = max(0, int(t.seats_total) - int(t.seats_booked))
+        ib.button(
+            text=f"{label} · свободно {free}",
+            callback_data=f"tcal:trip:{t.id}",
+        )
     ib.adjust(1)
     return ib.as_markup()
 

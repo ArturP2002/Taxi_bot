@@ -77,9 +77,13 @@ async def lifespan(app: FastAPI):
             except Exception as e:
                 _logger.warning("get_webhook_info failed: %s", e)
 
-        from app.services.scheduler_service import loading_reminder_loop
+        from app.services.scheduler_service import (
+            loading_reminder_loop,
+            scheduled_orders_activation_loop,
+        )
 
         scheduler_task = asyncio.create_task(loading_reminder_loop(bot, stop_scheduler))
+        asyncio.create_task(scheduled_orders_activation_loop(bot, stop_scheduler))
 
     yield
 

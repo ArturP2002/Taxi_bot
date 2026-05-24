@@ -1,4 +1,4 @@
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 
 from aiogram import Router, F, Bot
 from aiogram.filters import Command
@@ -6,7 +6,7 @@ from aiogram.fsm.context import FSMContext
 from aiogram.types import Message, CallbackQuery
 
 from app.bot import keyboards
-from app.bot.states import PassengerOrder, RelayChat, AdminRelayChat
+from app.bot.states import PassengerOrder
 from app.bot import messages as bot_messages
 from app.bot.messages import send_passenger_rules
 from app.bot.users import ensure_user
@@ -16,7 +16,7 @@ from app.services import code_service, order_service
 from app.services import direction_search
 from app.services.admin_notify import notify_new_order
 from app.services import passenger_payment_service
-from app.services import admin_relay
+from app.services import scheduled_trip_service
 from app.services.boarding_credentials import (
     send_passenger_boarding_credentials,
     boarding_code_for_order,
@@ -95,9 +95,74 @@ async def direction_page(cb: CallbackQuery, state: FSMContext) -> None:
 @router.callback_query(PassengerOrder.choosing_direction, F.data.startswith("dirpick:"))
 async def pick_direction(cb: CallbackQuery, state: FSMContext) -> None:
     did = int(cb.data.split(":")[1])
-    await state.update_data(direction_id=did)
-    await state.set_state(PassengerOrder.from_location)
-    await cb.message.answer("Точка отправления (текстом):", reply_markup=keyboards.cancel_kb())
+    await state.update_data(direction_id=did, scheduled_trip_id=None)
+    await state.set_state(PassengerOrder.choosing_trip_date)
+    now = datetime.now(timezone.utc)
+    avail = scheduled_trip_service.available_dates_for_direction(did)
+    await cb.message.answer(
+        "Выберите дату рейса или «Ближайший рейс»:",
+        reply_markup=keyboards.trip_calendar_kb(
+            now.year, now.month, available_dates=avail, direction_id=did
+        ),
+    )
+    await cb.answer()
+
+
+@router.callback_query(PassengerOrder.choosing_trip_date, F.data.startswith("tcal:"))
+async def trip_calendar_cb(cb: CallbackQuery, state: FSMContext) -> None:
+    parts = cb.data.split(":")
+    action = parts[1]
+    if action == "noop":
+        await cb.answer()
+        return
+    direction_id = int(parts[2])
+    if action == "nav":
+        ym = parts[3].split("-")
+        year, month = int(ym[0]), int(ym[1])
+        avail = scheduled_trip_service.available_dates_for_direction(direction_id)
+        await cb.message.edit_reply_markup(
+            reply_markup=keyboards.trip_calendar_kb(
+                year, month, available_dates=avail, direction_id=direction_id
+            )
+        )
+        await cb.answer()
+        return
+    if action == "asap":
+        await state.update_data(scheduled_trip_id=None)
+        await state.set_state(PassengerOrder.from_location)
+        await cb.message.answer("Точка отправления (текстом):", reply_markup=keyboards.cancel_kb())
+        await cb.answer()
+        return
+    if action == "day":
+        day = date.fromisoformat(parts[3])
+        trips = scheduled_trip_service.trips_on_date(direction_id, day)
+        if not trips:
+            await cb.answer("Нет рейсов на эту дату", show_alert=True)
+            return
+        if len(trips) == 1:
+            await state.update_data(scheduled_trip_id=trips[0].id)
+            await state.set_state(PassengerOrder.from_location)
+            dep = trips[0].departure_at
+            label = dep.strftime("%d.%m.%Y %H:%M") if hasattr(dep, "strftime") else str(dep)
+            await cb.message.answer(
+                f"Рейс: {label}\nТочка отправления (текстом):",
+                reply_markup=keyboards.cancel_kb(),
+            )
+            await cb.answer()
+            return
+        await cb.message.answer(
+            "Выберите время рейса:",
+            reply_markup=keyboards.scheduled_trips_pick_kb(trips),
+        )
+        await cb.answer()
+        return
+    if action == "trip":
+        trip_id = int(parts[2])
+        await state.update_data(scheduled_trip_id=trip_id)
+        await state.set_state(PassengerOrder.from_location)
+        await cb.message.answer("Точка отправления (текстом):", reply_markup=keyboards.cancel_kb())
+        await cb.answer()
+        return
     await cb.answer()
 
 
@@ -156,6 +221,26 @@ async def phone_enter(message: Message, state: FSMContext, bot: Bot) -> None:
         pay_status = PassengerPaymentStatus.AWAITING.value
         order_status = OrderStatus.AWAITING_PAYMENT.value
 
+    trip_id = data.get("scheduled_trip_id")
+    scheduled_activated = False
+    trip_label = ""
+    if trip_id:
+        from app.models.scheduled_trip import ScheduledTrip
+
+        try:
+            trip = ScheduledTrip.get_by_id(int(trip_id))
+            scheduled_trip_service.book_seats(int(trip_id), int(data["seats"]))
+            dep = trip.departure_at
+            if hasattr(dep, "strftime"):
+                trip_label = f"\n📅 Рейс: {dep.strftime('%d.%m.%Y %H:%M')} UTC"
+            scheduled_activated = scheduled_trip_service.trip_departure_day_reached(trip)
+        except ValueError as e:
+            await message.answer(f"Не удалось забронировать: {e}")
+            return
+        except Exception:
+            await message.answer("Рейс недоступен. Выберите другое время.")
+            return
+
     order = Order.create(
         direction=direction,
         passenger=user,
@@ -168,6 +253,8 @@ async def phone_enter(message: Message, state: FSMContext, bot: Bot) -> None:
         passenger_payment_status=pay_status,
         confirmation_code_hash="tmp",
         code_issued_at=now,
+        scheduled_trip_id=int(trip_id) if trip_id else None,
+        scheduled_activated=scheduled_activated,
     )
     code_service.persist_boarding_code(order.id, code)
     order = Order.get_by_id(order.id)
@@ -177,10 +264,13 @@ async def phone_enter(message: Message, state: FSMContext, bot: Bot) -> None:
     loading_cars = loading_service.drivers_loading_on_direction(direction.id)
     caption = (
         bot_messages.format_order_summary(order, direction)
+        + trip_label
         + "\n\n"
         "Код и QR отправлены отдельными сообщениями ниже.\n"
         "«📞 Связь с водителем» — после назначения. «📞 Связь с админом» — в любой момент."
     )
+    if trip_id and not scheduled_activated:
+        caption += "\n⏳ Заказ в очереди на выбранную дату — водитель назначится ближе к рейсу."
     if loading_cars:
         lines = [c.status_label for c in loading_cars[:4]]
         caption += "\n\n🚐 Сейчас набирают: " + "; ".join(lines)
@@ -342,6 +432,7 @@ def _contactable_order(user) -> Order | None:
 @router.message(F.text == "📞 Связь")
 @router.message(Command("contact"))
 async def contact_driver(message: Message, state: FSMContext) -> None:
+    await state.clear()
     ensure_user(message.from_user)
     o = _contactable_order(message.from_user)
     if not o:
@@ -349,57 +440,12 @@ async def contact_driver(message: Message, state: FSMContext) -> None:
             "Нет заказа с назначенным водителем. Связь доступна после назначения."
         )
         return
-    await state.set_state(RelayChat.active)
-    await state.update_data(relay_order_id=o.id)
-    await message.answer(
-        f"Чат с водителем по заказу #{o.id}. /stop чтобы выйти."
-    )
-
-
-@router.message(F.text == "📞 Связь с админом")
-async def contact_admin(message: Message, state: FSMContext) -> None:
-    user = ensure_user(message.from_user)
-    o = admin_relay.active_order_for_passenger(user)
-    await state.set_state(AdminRelayChat.active)
-    await state.update_data(admin_relay_order_id=o.id if o else None)
-    hint = f" по заказу #{o.id}" if o else ""
-    await message.answer(f"Чат с администратором{hint}. Пишите сообщение. /stop — выход.")
-
-
-@router.message(AdminRelayChat.active, F.text)
-async def relay_admin_passenger(message: Message, state: FSMContext, bot: Bot) -> None:
-    if message.text.startswith("/stop"):
-        await state.clear()
-        await message.answer("Чат закрыт.", reply_markup=keyboards.main_passenger_kb())
-        return
-    data = await state.get_data()
-    await admin_relay.relay_to_admins(
-        bot,
-        message.text,
-        from_telegram_id=message.from_user.id,
-        role="пассажир",
-        order_id=data.get("admin_relay_order_id"),
-    )
-    await message.answer("Сообщение отправлено администратору.")
-
-
-@router.message(RelayChat.active, F.text)
-async def relay_passenger(message: Message, state: FSMContext, bot: Bot) -> None:
-    if message.text.startswith("/stop"):
-        await state.clear()
-        await message.answer("Чат закрыт.", reply_markup=keyboards.main_passenger_kb())
-        return
-    data = await state.get_data()
-    oid = data.get("relay_order_id")
-    if not oid:
-        await state.clear()
-        return
     from app.models import OrderDriverAssignment, AssignmentStatus, DriverProfile
 
     ass = (
         OrderDriverAssignment.select()
         .where(
-            (OrderDriverAssignment.order_id == oid)
+            (OrderDriverAssignment.order_id == o.id)
             & (OrderDriverAssignment.status.in_([
                 AssignmentStatus.ACCEPTED.value,
                 AssignmentStatus.PENDING.value,
@@ -412,15 +458,20 @@ async def relay_passenger(message: Message, state: FSMContext, bot: Bot) -> None
         return
     drv = DriverProfile.get_by_id(ass.driver_id)
     tid = drv.user.telegram_id
-    text = f"💬 Заказ #{oid} (пассажир):\n{message.text}"
-    try:
-        await bot.send_message(tid, text)
-    except Exception:
-        await message.answer("Не удалось доставить сообщение.")
+    await message.answer(
+        f"Заказ #{o.id} — напишите водителю в личный чат:",
+        reply_markup=keyboards.contact_user_inline(tid, "💬 Водитель"),
+    )
+
+
+@router.message(F.text == "📞 Связь с админом")
+async def contact_admin(message: Message, state: FSMContext) -> None:
+    await state.clear()
+    settings = get_settings()
+    if not settings.admin_ids:
+        await message.answer("Администратор не настроен.")
         return
-    await message.answer("Отправлено.")
-
-
-@router.message(RelayChat.active)
-async def relay_non_text(message: Message) -> None:
-    await message.answer("Пока поддерживаются только текстовые сообщения.")
+    await message.answer(
+        "Связь с администратором:",
+        reply_markup=keyboards.contact_admins_inline(settings.admin_ids),
+    )

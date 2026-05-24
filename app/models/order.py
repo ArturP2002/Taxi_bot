@@ -7,6 +7,7 @@ from peewee import (
     TextField,
     IntegerField,
     CharField,
+    BooleanField,
     DateTimeField,
     DecimalField,
 )
@@ -14,6 +15,7 @@ from peewee import (
 from app.models.base import BaseModel
 from app.models.direction import Direction
 from app.models.driver import DriverProfile
+from app.models.scheduled_trip import ScheduledTrip
 from app.models.user import User
 from app.util.datetimeutil import utcnow
 
@@ -65,6 +67,10 @@ class Order(BaseModel):
     pickup_surcharge = DecimalField(max_digits=12, decimal_places=2, default=Decimal("0"))
     transfer_requested_at = DateTimeField(null=True)
     transfer_note = TextField(null=True)
+    scheduled_trip = ForeignKeyField(
+        ScheduledTrip, null=True, backref="orders", on_delete="SET NULL"
+    )
+    scheduled_activated = BooleanField(default=False)
     created_at = DateTimeField(default=utcnow)
     updated_at = DateTimeField(null=True)
 

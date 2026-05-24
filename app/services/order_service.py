@@ -445,6 +445,10 @@ def cancel_order(order: Order, *, actor_telegram_id: Optional[int] = None) -> Op
     from app.services import driver_risk_service
 
     linked_driver_id = driver_risk_service.driver_linked_to_cancelled_order(order)
+    if order.scheduled_trip_id:
+        from app.services import scheduled_trip_service
+
+        scheduled_trip_service.release_seats(order.scheduled_trip_id, order.seats)
     Order.update(status=OrderStatus.CANCELLED.value, updated_at=now).where(Order.id == order.id).execute()
     audit_service.log_action(
         "order_cancelled",
@@ -567,16 +571,21 @@ def auto_assign_pending_orders(driver: DriverProfile) -> List[Order]:
         free = driver.max_seats - own - occ - pending_count
         if free <= 0:
             break
-        order = (
+        from app.services import scheduled_trip_service
+
+        order = None
+        for cand in (
             Order.select()
             .where(
                 (Order.direction_id == driver.direction_id)
                 & (Order.status == OrderStatus.NEW.value)
             )
             .order_by(Order.id)
-            .first()
-        )
-        if not order or not order_ready_for_dispatch(order):
+        ):
+            if scheduled_trip_service.is_order_in_live_queue(cand) and order_ready_for_dispatch(cand):
+                order = cand
+                break
+        if not order:
             break
         if order.seats > free:
             break

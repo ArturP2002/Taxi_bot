@@ -16,6 +16,22 @@ from app.services.loading_service import direction_waiting_pool
 logger = logging.getLogger("taxi_bot.scheduler")
 
 
+async def scheduled_orders_activation_loop(bot: Bot, stop_event: asyncio.Event) -> None:
+    from app.services import scheduled_trip_service
+
+    while not stop_event.is_set():
+        try:
+            n = scheduled_trip_service.activate_due_orders()
+            if n:
+                logger.info("Activated %s scheduled orders for live queue", n)
+        except Exception:
+            logger.exception("scheduled orders activation tick failed")
+        try:
+            await asyncio.wait_for(stop_event.wait(), timeout=600)
+        except asyncio.TimeoutError:
+            pass
+
+
 async def loading_reminder_loop(bot: Bot, stop_event: asyncio.Event) -> None:
     settings = get_settings()
     window = settings.loading_reminder_minutes_before

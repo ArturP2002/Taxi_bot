@@ -7,12 +7,11 @@ from aiogram.types import Message, CallbackQuery
 
 from app.bot import keyboards
 from app.bot.states import (
-    DriverRegister, ProposeDirection, DriverCode, DriverRelayChat,
+    DriverRegister, ProposeDirection, DriverCode,
     DriverLoadingPhoto, DriverTransferRequest,
-    DriverOnlineSetup, DriverRest, AdminRelayChat,
+    DriverOnlineSetup, DriverRest, DriverOfferConsent, DriverCreateTrip,
 )
 from app.services import commission_service
-from app.services import admin_relay
 from app.bot.users import ensure_user
 from app.models import (
     CommissionLedger,
@@ -61,6 +60,61 @@ _REG_STATES = {
 }
 
 
+async def _ensure_driver_offer_accepted(
+    message: Message, state: FSMContext, dprof: DriverProfile
+) -> bool:
+    if getattr(dprof, "offer_accepted_at", None):
+        return True
+    settings = get_settings()
+    if not settings.driver_offer_url.strip():
+        from app.util.datetimeutil import utcnow
+
+        dprof.offer_accepted_at = utcnow()
+        dprof.save()
+        return True
+    await state.set_state(DriverOfferConsent.consent)
+    await state.update_data(offer_agreed=False)
+    await message.answer(
+        "Для регистрации водителя необходимо принять оферту:",
+        reply_markup=keyboards.driver_offer_consent_kb(False, settings.driver_offer_url),
+    )
+    return False
+
+
+@router.callback_query(DriverOfferConsent.consent, F.data == "offer_toggle")
+async def offer_toggle(cb: CallbackQuery, state: FSMContext) -> None:
+    data = await state.get_data()
+    agreed = not bool(data.get("offer_agreed"))
+    await state.update_data(offer_agreed=agreed)
+    settings = get_settings()
+    try:
+        await cb.message.edit_reply_markup(
+            reply_markup=keyboards.driver_offer_consent_kb(agreed, settings.driver_offer_url),
+        )
+    except Exception:
+        pass
+    await cb.answer("Согласие принято" if agreed else "Согласие снято")
+
+
+@router.callback_query(DriverOfferConsent.consent, F.data == "offer_continue")
+async def offer_continue(cb: CallbackQuery, state: FSMContext) -> None:
+    data = await state.get_data()
+    if not data.get("offer_agreed"):
+        await cb.answer("Сначала примите оферту", show_alert=True)
+        return
+    from app.util.datetimeutil import utcnow
+
+    u = User.get(telegram_id=cb.from_user.id)
+    dprof = DriverProfile.get(user=u)
+    dprof.offer_accepted_at = utcnow()
+    dprof.save()
+    await state.clear()
+    await cb.message.edit_reply_markup(reply_markup=None)
+    await cb.message.answer(reg_service.prompt_registration_intro())
+    await _resume_driver_registration(cb.message, state, dprof)
+    await cb.answer()
+
+
 async def begin_driver_registration(message: Message, state: FSMContext) -> None:
     """Entry: «Я водитель» or incomplete profile — start or resume анкета."""
     await state.clear()
@@ -77,9 +131,10 @@ async def begin_driver_registration(message: Message, state: FSMContext) -> None
         return
 
     if dprof.status == DriverStatus.ACTIVE.value:
-        from app.bot.messages import send_driver_rules
-
-        await send_driver_rules(message, reply_markup=keyboards.main_driver_kb())
+        await message.answer(
+            "Меню водителя:",
+            reply_markup=keyboards.main_driver_kb(),
+        )
         return
 
     if dprof.status == DriverStatus.SUSPICIOUS.value:
@@ -98,9 +153,13 @@ async def begin_driver_registration(message: Message, state: FSMContext) -> None
         return
 
     if not reg_service.driver_needs_registration(dprof):
-        from app.bot.messages import send_driver_rules
+        await message.answer(
+            "Меню водителя:",
+            reply_markup=keyboards.main_driver_kb(),
+        )
+        return
 
-        await send_driver_rules(message, reply_markup=keyboards.main_driver_kb())
+    if not await _ensure_driver_offer_accepted(message, state, dprof):
         return
 
     await message.answer(reg_service.prompt_registration_intro())
@@ -821,29 +880,14 @@ async def driver_chat_start(message: Message, state: FSMContext) -> None:
         .first()
     )
     if not active:
-        await message.answer("Нет заказа для чата (нужно принять назначение).")
+        await message.answer("Нет заказа для связи (нужно принять назначение).")
         return
-    await state.set_state(DriverRelayChat.active)
-    await state.update_data(relay_order_id=active.id)
-    await message.answer(f"Чат по заказу #{active.id}. Пишите текст. /stop чтобы выйти.")
-
-
-@router.message(DriverRelayChat.active, F.text)
-async def driver_relay(message: Message, state: FSMContext, bot: Bot) -> None:
-    if message.text.startswith("/stop"):
-        await state.clear()
-        await message.answer("Чат закрыт.", reply_markup=keyboards.main_driver_kb())
-        return
-    data = await state.get_data()
-    oid = data.get("relay_order_id")
-    o = Order.get_by_id(oid)
-    text = f"💬 Заказ #{oid} (водитель):\n{message.text}"
-    try:
-        await bot.send_message(o.passenger.telegram_id, text)
-    except Exception:
-        await message.answer("Не удалось доставить.")
-        return
-    await message.answer("Отправлено.")
+    o = Order.get_by_id(active.id)
+    tid = o.passenger.telegram_id
+    await message.answer(
+        f"Заказ #{active.id} — напишите пассажиру:",
+        reply_markup=keyboards.contact_user_inline(tid, "💬 Пассажир"),
+    )
 
 
 @router.message(F.text == keyboards.BTN_CANCEL)
@@ -1098,27 +1142,130 @@ async def driver_direction_info(message: Message) -> None:
 @router.message(F.text == "📞 Связь с админом")
 async def driver_admin_chat(message: Message, state: FSMContext) -> None:
     await state.clear()
+    settings = get_settings()
+    if not settings.admin_ids:
+        await message.answer("Администратор не настроен.")
+        return
+    await message.answer(
+        "Связь с администратором:",
+        reply_markup=keyboards.contact_admins_inline(settings.admin_ids),
+    )
+
+
+@router.message(F.text == "📅 Мои рейсы")
+async def driver_my_trips(message: Message, state: FSMContext) -> None:
+    await state.clear()
+    if await _start_registration_if_needed(message, state):
+        return
     ensure_user(message.from_user, prefer_driver=True)
-    await state.set_state(AdminRelayChat.active)
-    await state.update_data(admin_relay_driver_id=_driver(message).id)
-    await message.answer("Чат с администратором. /stop — выход.")
+    dprof = _driver(message)
+    from app.services import scheduled_trip_service
+
+    trips = scheduled_trip_service.list_driver_trips(dprof)
+    if not trips:
+        await message.answer("Нет запланированных рейсов.")
+        return
+    lines = []
+    for t in trips:
+        dep = t.departure_at
+        label = dep.strftime("%d.%m.%Y %H:%M") if hasattr(dep, "strftime") else str(dep)
+        free = scheduled_trip_service.seats_available(t)
+        d = Direction.get_by_id(t.direction_id)
+        lines.append(f"• {d.from_label}→{d.to_label} · {label} · свободно {free}/{t.seats_total}")
+    await message.answer("📅 Ваши рейсы:\n" + "\n".join(lines))
 
 
-@router.message(AdminRelayChat.active, F.text)
-async def driver_admin_relay(message: Message, state: FSMContext, bot: Bot) -> None:
-    if message.text.startswith("/stop"):
+@router.message(F.text == "➕ Объявить рейс")
+async def driver_create_trip_start(message: Message, state: FSMContext) -> None:
+    await state.clear()
+    if await _start_registration_if_needed(message, state):
+        return
+    settings = get_settings()
+    if not settings.driver_can_create_trips:
+        await message.answer("Создание рейсов доступно только через администратора.")
+        return
+    ensure_user(message.from_user, prefer_driver=True)
+    dprof = _driver(message)
+    if not dprof.direction_id:
+        await message.answer("Сначала администратор должен назначить вам направление.")
+        return
+    await state.set_state(DriverCreateTrip.date)
+    await message.answer(
+        "Дата рейса (ДД.ММ.ГГГГ), например 25.05.2026:",
+        reply_markup=keyboards.cancel_kb(),
+    )
+
+
+@router.message(DriverCreateTrip.date, F.text, _NOT_MENU_TEXT)
+async def driver_create_trip_date(message: Message, state: FSMContext) -> None:
+    if message.text == keyboards.BTN_CANCEL:
         await state.clear()
-        await message.answer("Чат закрыт.", reply_markup=keyboards.main_driver_kb())
+        await message.answer("Отменено.", reply_markup=keyboards.main_driver_kb())
+        return
+    try:
+        day = datetime.strptime(message.text.strip(), "%d.%m.%Y").date()
+    except ValueError:
+        await message.answer("Формат: ДД.ММ.ГГГГ")
+        return
+    await state.update_data(trip_date=day.isoformat())
+    await state.set_state(DriverCreateTrip.time_text)
+    await message.answer("Время выезда (ЧЧ:ММ), например 08:00:")
+
+
+@router.message(DriverCreateTrip.time_text, F.text, _NOT_MENU_TEXT)
+async def driver_create_trip_time(message: Message, state: FSMContext) -> None:
+    if message.text == keyboards.BTN_CANCEL:
+        await state.clear()
+        await message.answer("Отменено.", reply_markup=keyboards.main_driver_kb())
+        return
+    await state.update_data(trip_time=message.text.strip())
+    await state.set_state(DriverCreateTrip.seats)
+    dprof = _driver(message)
+    await message.answer(f"Сколько мест в рейсе (1–{dprof.max_seats or 8})?")
+
+
+@router.message(DriverCreateTrip.seats, F.text, _NOT_MENU_TEXT)
+async def driver_create_trip_seats(message: Message, state: FSMContext) -> None:
+    if message.text == keyboards.BTN_CANCEL:
+        await state.clear()
+        await message.answer("Отменено.", reply_markup=keyboards.main_driver_kb())
+        return
+    if not message.text.isdigit():
+        await message.answer("Введите число.")
+        return
+    seats = int(message.text)
+    dprof = _driver(message)
+    max_s = dprof.max_seats or keyboards.SEATS_VEHICLE_MAX
+    if seats < 1 or seats > max_s:
+        await message.answer(f"От 1 до {max_s}.")
         return
     data = await state.get_data()
-    await admin_relay.relay_to_admins(
-        bot,
-        message.text,
-        from_telegram_id=message.from_user.id,
-        role="водитель",
-        driver_id=data.get("admin_relay_driver_id"),
+    day = datetime.fromisoformat(data["trip_date"]).date()
+    hh, mm = data["trip_time"].split(":")
+    dep = datetime(day.year, day.month, day.day, int(hh), int(mm), tzinfo=timezone.utc)
+    from app.services import scheduled_trip_service
+    from app.models.scheduled_trip import ScheduledTripCreatedBy, ScheduledTripStatus
+
+    settings = get_settings()
+    status = (
+        ScheduledTripStatus.OPEN.value
+        if settings.driver_can_create_trips
+        else ScheduledTripStatus.DRAFT.value
     )
-    await message.answer("Отправлено администратору.")
+    trip = scheduled_trip_service.create_trip(
+        direction_id=dprof.direction_id,
+        departure_at=dep,
+        seats_total=seats,
+        driver_id=dprof.id,
+        created_by=ScheduledTripCreatedBy.DRIVER.value,
+        status=status,
+    )
+    await state.clear()
+    label = "открыт" if status == ScheduledTripStatus.OPEN.value else "на модерации"
+    await message.answer(
+        f"✅ Рейс создан ({label}): {dep.strftime('%d.%m.%Y %H:%M')} · {seats} мест.",
+        reply_markup=keyboards.main_driver_kb(),
+    )
 
 
 @router.message(F.text == "📊 История")
@@ -1316,7 +1463,7 @@ async def reg_car(message: Message, state: FSMContext) -> None:
     dprof.status = DriverStatus.PENDING.value
     dprof.save()
     await state.set_state(DriverRegister.photo_front)
-    await message.answer("📷 Фото машины спереди:")
+    await message.answer(reg_service.REGISTRATION_PHOTOS_HINT)
 
 
 def _reg_photo_file_id(message: Message) -> str | None:
@@ -1444,38 +1591,14 @@ async def reg_max_seats(message: Message, state: FSMContext) -> None:
     ensure_user(message.from_user, prefer_driver=True)
     dprof = DriverProfile.get(user=User.get(telegram_id=message.from_user.id))
     dprof.max_seats = max_seats
+    dprof.own_seats_reserved = 0
     dprof.status = DriverStatus.PENDING.value
     dprof.save()
-    await state.set_state(DriverRegister.own_seats)
-    await message.answer(
-        f"Сколько мест обычно занимают ваши пассажиры "
-        f"({keyboards.SEATS_OWN_MIN}–{keyboards.SEATS_OWN_MAX})?"
-    )
-
-
-@router.message(DriverRegister.own_seats, F.text, _NOT_MENU_TEXT)
-async def reg_own_seats(message: Message, state: FSMContext) -> None:
-    data = await state.get_data()
-    max_seats = int(data.get("max_seats", keyboards.SEATS_VEHICLE_MAX))
-    if not message.text.isdigit() or int(message.text) not in range(
-        keyboards.SEATS_OWN_MIN, keyboards.SEATS_OWN_MAX + 1
-    ):
-        await message.answer(
-            f"Введите число {keyboards.SEATS_OWN_MIN}–{keyboards.SEATS_OWN_MAX}."
-        )
-        return
-    own = int(message.text)
-    if own >= max_seats:
-        await message.answer(f"Должно быть меньше {max_seats} (всего мест в машине).")
-        return
-    await state.update_data(own_seats=own)
-    ensure_user(message.from_user, prefer_driver=True)
-    dprof = DriverProfile.get(user=User.get(telegram_id=message.from_user.id))
-    dprof.own_seats_reserved = own
-    dprof.status = DriverStatus.PENDING.value
-    dprof.save()
+    await state.update_data(own_seats=0)
     await state.set_state(DriverRegister.price_per_seat)
-    await message.answer("Тариф: цена за место (₽, число):")
+    await message.answer(
+        "Тариф: сначала цена за одно место (₽, число), затем фикс за рейс (0 если нет):"
+    )
 
 
 @router.message(DriverRegister.price_per_seat, F.text, _NOT_MENU_TEXT)
@@ -1523,14 +1646,6 @@ async def reg_fixed(message: Message, state: FSMContext, bot: Bot) -> None:
                 reg_service.prompt_route_from(step=1)
                 + f"\n({keyboards.BTN_CANCEL} — выйти в меню)",
                 reply_markup=keyboards.cancel_kb(),
-            )
-            return
-        if result.startswith("own_seats:"):
-            max_seats = int(result.split(":")[1])
-            await state.set_state(DriverRegister.own_seats)
-            await message.answer(
-                f"Своих мест должно быть меньше {max_seats}. "
-                f"Введите число {keyboards.SEATS_OWN_MIN}–{max_seats - 1}:"
             )
             return
         if result == "ФИО не указано. Введите ФИО:":

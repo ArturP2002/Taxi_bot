@@ -116,7 +116,14 @@ def direction_waiting_pool(direction_id: int) -> Dict[str, Any]:
         )
         .order_by(Order.id)
     )
-    ready = [o for o in orders if order_service.order_ready_for_dispatch(o) or o.status == OrderStatus.ADMIN_REVIEW.value]
+    from app.services import scheduled_trip_service
+
+    ready = [
+        o
+        for o in orders
+        if scheduled_trip_service.is_order_in_live_queue(o)
+        and (order_service.order_ready_for_dispatch(o) or o.status == OrderStatus.ADMIN_REVIEW.value)
+    ]
     total_seats = sum(o.seats for o in ready)
     return {
         "order_count": len(ready),

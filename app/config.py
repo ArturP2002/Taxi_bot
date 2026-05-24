@@ -56,6 +56,10 @@ class Settings(BaseSettings):
     queue_loading_gap_min: int = 30
     queue_default_rest_min: int = 0
 
+    driver_offer_url: str = ""
+    driver_can_create_trips: bool = False
+    scheduled_trip_booking_days_ahead: int = 60
+
     route_reserve_min_drivers: int = 3
     loading_reminder_minutes_before: int = 30
     queue_underfill_notify_min_orders: int = 1

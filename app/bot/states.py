@@ -1,8 +1,13 @@
 from aiogram.fsm.state import State, StatesGroup
 
 
+class DriverOfferConsent(StatesGroup):
+    consent = State()
+
+
 class PassengerOrder(StatesGroup):
     choosing_direction = State()
+    choosing_trip_date = State()
     direction_search = State()
     from_location = State()
     to_location = State()
@@ -24,7 +29,6 @@ class DriverRegister(StatesGroup):
     photo_salon_extra = State()
     phone = State()
     max_seats = State()
-    own_seats = State()
     price_per_seat = State()
     fixed_price = State()
 
@@ -68,3 +72,9 @@ class DriverLoadingPhoto(StatesGroup):
 
 class DriverTransferRequest(StatesGroup):
     note = State()
+
+
+class DriverCreateTrip(StatesGroup):
+    date = State()
+    time_text = State()
+    seats = State()

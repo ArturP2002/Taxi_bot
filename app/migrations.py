@@ -104,6 +104,31 @@ MIGRATIONS: list[tuple[str, list[str]]] = [
             "ALTER TABLE orders ADD COLUMN boarding_code VARCHAR(6)",
         ],
     ),
+    (
+        "20260524_v8_driver_ux_scheduled",
+        [
+            "ALTER TABLE driver_profiles ADD COLUMN offer_accepted_at TEXT",
+            "ALTER TABLE driver_profiles ADD COLUMN registration_welcome_sent INTEGER DEFAULT 0",
+            """CREATE TABLE IF NOT EXISTS scheduled_trips (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                direction_id INTEGER NOT NULL,
+                departure_at TEXT NOT NULL,
+                seats_total INTEGER NOT NULL,
+                seats_booked INTEGER NOT NULL DEFAULT 0,
+                status VARCHAR(32) NOT NULL DEFAULT 'open',
+                driver_id INTEGER,
+                created_by VARCHAR(16) NOT NULL DEFAULT 'admin',
+                note TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT,
+                FOREIGN KEY (direction_id) REFERENCES directions(id) ON DELETE CASCADE,
+                FOREIGN KEY (driver_id) REFERENCES driver_profiles(id) ON DELETE SET NULL
+            )""",
+            "CREATE INDEX IF NOT EXISTS scheduled_trips_dir_dep_idx ON scheduled_trips(direction_id, departure_at, status)",
+            "ALTER TABLE orders ADD COLUMN scheduled_trip_id INTEGER",
+            "ALTER TABLE orders ADD COLUMN scheduled_activated INTEGER DEFAULT 0",
+        ],
+    ),
 ]
 
 

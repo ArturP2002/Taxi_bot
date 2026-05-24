@@ -22,6 +22,11 @@ from app.models.financial import (
 )
 from app.models.audit import AuditLog
 from app.models.driver_event import DriverEvent, DriverEventType
+from app.models.scheduled_trip import (
+    ScheduledTrip,
+    ScheduledTripStatus,
+    ScheduledTripCreatedBy,
+)
 
 ALL_MODELS = [
     User,
@@ -40,6 +45,7 @@ ALL_MODELS = [
     PaymentRecord,
     AuditLog,
     DriverEvent,
+    ScheduledTrip,
 ]
 
 __all__ = [
@@ -71,4 +77,7 @@ __all__ = [
     "ReserveGroupStatus",
     "DriverRegistrationPhoto",
     "LoadingPhoto",
+    "ScheduledTrip",
+    "ScheduledTripStatus",
+    "ScheduledTripCreatedBy",
 ]

@@ -51,7 +51,7 @@ def test_finalize_registration_persists_and_creates_proposals(monkeypatch):
         "car_info": "Kia Rio, 2025, H567PK",
         "phone": "+79991234567",
         "max_seats": 8,
-        "own_seats": 1,
+        "own_seats": 0,
         "price_per_seat": "90000",
         "fixed_price": "2000",
         "include_return": True,
@@ -69,7 +69,7 @@ def test_finalize_registration_persists_and_creates_proposals(monkeypatch):
     assert saved.car_info == "Kia Rio, 2025, H567PK"
     assert saved.status == DriverStatus.PENDING.value
     assert saved.max_seats == 8
-    assert saved.own_seats_reserved == 1
+    assert saved.own_seats_reserved == 0
     assert saved.proposed_price_per_seat == Decimal("90000")
     assert saved.proposed_fixed_price == Decimal("2000")
 
