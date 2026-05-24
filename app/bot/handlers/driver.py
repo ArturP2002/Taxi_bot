@@ -1167,8 +1167,9 @@ async def driver_my_trips(message: Message, state: FSMContext) -> None:
         return
     lines = []
     for t in trips:
-        dep = t.departure_at
-        label = dep.strftime("%d.%m.%Y %H:%M") if hasattr(dep, "strftime") else str(dep)
+        from app.util.time_format import format_datetime_display
+
+        label = format_datetime_display(t.departure_at)
         free = scheduled_trip_service.seats_available(t)
         d = Direction.get_by_id(t.direction_id)
         lines.append(f"• {d.from_label}→{d.to_label} · {label} · свободно {free}/{t.seats_total}")
@@ -1191,34 +1192,25 @@ async def driver_create_trip_start(message: Message, state: FSMContext) -> None:
         return
     await state.set_state(DriverCreateTrip.date)
     await message.answer(
-        "Дата рейса (ДД.ММ.ГГГГ), например 25.05.2026:",
+        "Дата и время выезда (ДД.ММ.ГГГГ ЧЧ:ММ), например 25.05.2026 08:00:",
         reply_markup=keyboards.cancel_kb(),
     )
 
 
 @router.message(DriverCreateTrip.date, F.text, _NOT_MENU_TEXT)
-async def driver_create_trip_date(message: Message, state: FSMContext) -> None:
+async def driver_create_trip_datetime(message: Message, state: FSMContext) -> None:
     if message.text == keyboards.BTN_CANCEL:
         await state.clear()
         await message.answer("Отменено.", reply_markup=keyboards.main_driver_kb())
         return
+    from app.util.time_format import DATETIME_DISPLAY_HINT, parse_datetime_display
+
     try:
-        day = datetime.strptime(message.text.strip(), "%d.%m.%Y").date()
+        dep = parse_datetime_display(message.text.strip())
     except ValueError:
-        await message.answer("Формат: ДД.ММ.ГГГГ")
+        await message.answer(f"Формат: {DATETIME_DISPLAY_HINT}")
         return
-    await state.update_data(trip_date=day.isoformat())
-    await state.set_state(DriverCreateTrip.time_text)
-    await message.answer("Время выезда (ЧЧ:ММ), например 08:00:")
-
-
-@router.message(DriverCreateTrip.time_text, F.text, _NOT_MENU_TEXT)
-async def driver_create_trip_time(message: Message, state: FSMContext) -> None:
-    if message.text == keyboards.BTN_CANCEL:
-        await state.clear()
-        await message.answer("Отменено.", reply_markup=keyboards.main_driver_kb())
-        return
-    await state.update_data(trip_time=message.text.strip())
+    await state.update_data(trip_departure_at=dep.isoformat())
     await state.set_state(DriverCreateTrip.seats)
     dprof = _driver(message)
     await message.answer(f"Сколько мест в рейсе (1–{dprof.max_seats or 8})?")
@@ -1240,9 +1232,9 @@ async def driver_create_trip_seats(message: Message, state: FSMContext) -> None:
         await message.answer(f"От 1 до {max_s}.")
         return
     data = await state.get_data()
-    day = datetime.fromisoformat(data["trip_date"]).date()
-    hh, mm = data["trip_time"].split(":")
-    dep = datetime(day.year, day.month, day.day, int(hh), int(mm), tzinfo=timezone.utc)
+    dep = datetime.fromisoformat(data["trip_departure_at"])
+    if dep.tzinfo is None:
+        dep = dep.replace(tzinfo=timezone.utc)
     from app.services import scheduled_trip_service
     from app.models.scheduled_trip import ScheduledTripCreatedBy, ScheduledTripStatus
 
@@ -1260,10 +1252,12 @@ async def driver_create_trip_seats(message: Message, state: FSMContext) -> None:
         created_by=ScheduledTripCreatedBy.DRIVER.value,
         status=status,
     )
+    from app.util.time_format import format_datetime_display
+
     await state.clear()
     label = "открыт" if status == ScheduledTripStatus.OPEN.value else "на модерации"
     await message.answer(
-        f"✅ Рейс создан ({label}): {dep.strftime('%d.%m.%Y %H:%M')} · {seats} мест.",
+        f"✅ Рейс создан ({label}): {format_datetime_display(dep)} · {seats} мест.",
         reply_markup=keyboards.main_driver_kb(),
     )
 

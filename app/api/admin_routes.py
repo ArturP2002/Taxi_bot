@@ -1676,13 +1676,15 @@ def _trip_out(t) -> ScheduledTripOut:
             drv_name = drv.full_name
         except Exception:
             pass
+    from app.util.time_format import format_datetime_display
+
     dep = t.departure_at
     return ScheduledTripOut(
         id=t.id,
         direction_id=t.direction_id,
         from_label=d.from_label,
         to_label=d.to_label,
-        departure_at=str(dep),
+        departure_at=format_datetime_display(dep),
         seats_total=int(t.seats_total),
         seats_booked=int(t.seats_booked or 0),
         status=t.status,
@@ -1722,9 +1724,12 @@ def create_scheduled_trip(body: ScheduledTripCreate, user: User = Depends(requir
     from app.services import scheduled_trip_service
     from app.models.scheduled_trip import ScheduledTripCreatedBy
 
-    dep = datetime.fromisoformat(body.departure_at.replace("Z", "+00:00"))
-    if dep.tzinfo is None:
-        dep = dep.replace(tzinfo=timezone.utc)
+    from app.util.time_format import parse_datetime_display
+
+    try:
+        dep = parse_datetime_display(body.departure_at)
+    except ValueError as e:
+        raise HTTPException(400, str(e)) from e
     t = scheduled_trip_service.create_trip(
         direction_id=body.direction_id,
         departure_at=dep,
@@ -1752,10 +1757,12 @@ def patch_scheduled_trip(
     t = ScheduledTrip.get_by_id(trip_id)
     updates = body.model_dump(exclude_unset=True)
     if "departure_at" in updates and updates["departure_at"]:
-        dep = datetime.fromisoformat(updates["departure_at"].replace("Z", "+00:00"))
-        if dep.tzinfo is None:
-            dep = dep.replace(tzinfo=timezone.utc)
-        updates["departure_at"] = dep
+        from app.util.time_format import parse_datetime_display
+
+        try:
+            updates["departure_at"] = parse_datetime_display(updates["departure_at"])
+        except ValueError as e:
+            raise HTTPException(400, str(e)) from e
     if updates:
         updates["updated_at"] = datetime.now(timezone.utc)
         ScheduledTrip.update(**updates).where(ScheduledTrip.id == trip_id).execute()

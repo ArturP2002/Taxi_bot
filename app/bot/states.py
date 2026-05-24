@@ -76,5 +76,4 @@ class DriverTransferRequest(StatesGroup):
 
 class DriverCreateTrip(StatesGroup):
     date = State()
-    time_text = State()
     seats = State()

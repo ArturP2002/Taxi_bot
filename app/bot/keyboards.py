@@ -258,7 +258,7 @@ def trip_calendar_kb(
     month_dates = sorted(d for d in available_dates if d.year == year and d.month == month)
     for d in month_dates:
         ib.button(
-            text=d.strftime("%d.%m"),
+            text=d.strftime("%d.%m.%Y"),
             callback_data=f"tcal:day:{direction_id}:{d.isoformat()}",
         )
     if month_dates:
@@ -273,10 +273,11 @@ def trip_calendar_kb(
 
 
 def scheduled_trips_pick_kb(trips: list) -> InlineKeyboardMarkup:
+    from app.util.time_format import format_datetime_display
+
     ib = InlineKeyboardBuilder()
     for t in trips:
-        dep = t.departure_at
-        label = dep.strftime("%d.%m %H:%M") if hasattr(dep, "strftime") else str(dep)
+        label = format_datetime_display(t.departure_at)
         free = max(0, int(t.seats_total) - int(t.seats_booked))
         ib.button(
             text=f"{label} · свободно {free}",

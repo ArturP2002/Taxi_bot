@@ -142,8 +142,9 @@ async def trip_calendar_cb(cb: CallbackQuery, state: FSMContext) -> None:
         if len(trips) == 1:
             await state.update_data(scheduled_trip_id=trips[0].id)
             await state.set_state(PassengerOrder.from_location)
-            dep = trips[0].departure_at
-            label = dep.strftime("%d.%m.%Y %H:%M") if hasattr(dep, "strftime") else str(dep)
+            from app.util.time_format import format_datetime_display
+
+            label = format_datetime_display(trips[0].departure_at)
             await cb.message.answer(
                 f"Рейс: {label}\nТочка отправления (текстом):",
                 reply_markup=keyboards.cancel_kb(),
@@ -230,9 +231,9 @@ async def phone_enter(message: Message, state: FSMContext, bot: Bot) -> None:
         try:
             trip = ScheduledTrip.get_by_id(int(trip_id))
             scheduled_trip_service.book_seats(int(trip_id), int(data["seats"]))
-            dep = trip.departure_at
-            if hasattr(dep, "strftime"):
-                trip_label = f"\n📅 Рейс: {dep.strftime('%d.%m.%Y %H:%M')} UTC"
+            from app.util.time_format import format_datetime_display
+
+            trip_label = f"\n📅 Рейс: {format_datetime_display(trip.departure_at)}"
             scheduled_activated = scheduled_trip_service.trip_departure_day_reached(trip)
         except ValueError as e:
             await message.answer(f"Не удалось забронировать: {e}")
