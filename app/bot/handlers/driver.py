@@ -60,31 +60,48 @@ _REG_STATES = {
 }
 
 
+def _offer_accepted(dprof: DriverProfile) -> bool:
+    return bool(getattr(dprof, "offer_accepted_at", None))
+
+
 async def _ensure_driver_offer_accepted(
     message: Message, state: FSMContext, dprof: DriverProfile
 ) -> bool:
-    if getattr(dprof, "offer_accepted_at", None):
+    """Return True if user may continue; False if waiting on offer consent screen."""
+    if _offer_accepted(dprof):
         return True
     settings = get_settings()
-    if not settings.driver_offer_url.strip():
-        from app.util.datetimeutil import utcnow
-
-        dprof.offer_accepted_at = utcnow()
-        dprof.save()
-        return True
     await state.set_state(DriverOfferConsent.consent)
     await state.update_data(offer_agreed=False)
+    intro = (
+        "🧑‍✈️ Регистрация водителя\n\n"
+        "Перед заполнением анкеты необходимо принять оферту:\n"
+        "1) откройте документ (кнопка ниже), если ссылка настроена;\n"
+        "2) нажмите «Согласен»;\n"
+        "3) нажмите «Продолжить»."
+    )
+    if not settings.driver_offer_url.strip():
+        intro += (
+            "\n\n⚠️ Ссылка на оферту не настроена (DRIVER_OFFER_URL). "
+            "Попросите администратора добавить её в настройки бота."
+        )
     await message.answer(
-        "Для регистрации водителя необходимо принять оферту:",
+        intro,
         reply_markup=keyboards.driver_offer_consent_kb(False, settings.driver_offer_url),
     )
     return False
 
 
-@router.callback_query(DriverOfferConsent.consent, F.data == "offer_toggle")
+@router.callback_query(F.data == "offer_toggle")
 async def offer_toggle(cb: CallbackQuery, state: FSMContext) -> None:
+    u = User.get(telegram_id=cb.from_user.id)
+    dprof = DriverProfile.get(user=u)
+    if _offer_accepted(dprof):
+        await cb.answer("Оферта уже принята")
+        return
     data = await state.get_data()
     agreed = not bool(data.get("offer_agreed"))
+    await state.set_state(DriverOfferConsent.consent)
     await state.update_data(offer_agreed=agreed)
     settings = get_settings()
     try:
@@ -96,20 +113,26 @@ async def offer_toggle(cb: CallbackQuery, state: FSMContext) -> None:
     await cb.answer("Согласие принято" if agreed else "Согласие снято")
 
 
-@router.callback_query(DriverOfferConsent.consent, F.data == "offer_continue")
+@router.callback_query(F.data == "offer_continue")
 async def offer_continue(cb: CallbackQuery, state: FSMContext) -> None:
+    u = User.get(telegram_id=cb.from_user.id)
+    dprof = DriverProfile.get(user=u)
+    if _offer_accepted(dprof):
+        await cb.answer()
+        return
     data = await state.get_data()
     if not data.get("offer_agreed"):
-        await cb.answer("Сначала примите оферту", show_alert=True)
+        await cb.answer("Сначала нажмите «Согласен»", show_alert=True)
         return
     from app.util.datetimeutil import utcnow
 
-    u = User.get(telegram_id=cb.from_user.id)
-    dprof = DriverProfile.get(user=u)
     dprof.offer_accepted_at = utcnow()
     dprof.save()
     await state.clear()
-    await cb.message.edit_reply_markup(reply_markup=None)
+    try:
+        await cb.message.edit_reply_markup(reply_markup=None)
+    except Exception:
+        pass
     await cb.message.answer(reg_service.prompt_registration_intro())
     await _resume_driver_registration(cb.message, state, dprof)
     await cb.answer()
@@ -117,10 +140,15 @@ async def offer_continue(cb: CallbackQuery, state: FSMContext) -> None:
 
 async def begin_driver_registration(message: Message, state: FSMContext) -> None:
     """Entry: «Я водитель» or incomplete profile — start or resume анкета."""
-    await state.clear()
     ensure_user(message.from_user, prefer_driver=True)
     u = User.get(telegram_id=message.from_user.id)
     dprof = DriverProfile.get(user=u)
+
+    if reg_service.driver_needs_registration(dprof) and not _offer_accepted(dprof):
+        if not await _ensure_driver_offer_accepted(message, state, dprof):
+            return
+
+    await state.clear()
 
     if reg_service.driver_waiting_admin(dprof):
         await message.answer(
@@ -157,9 +185,6 @@ async def begin_driver_registration(message: Message, state: FSMContext) -> None
             "Меню водителя:",
             reply_markup=keyboards.main_driver_kb(),
         )
-        return
-
-    if not await _ensure_driver_offer_accepted(message, state, dprof):
         return
 
     await message.answer(reg_service.prompt_registration_intro())
@@ -227,6 +252,8 @@ async def _start_registration_if_needed(
     """Return True if registration was started (caller should stop)."""
     if not reg_service.driver_needs_registration(dprof):
         return False
+    if not await _ensure_driver_offer_accepted(message, state, dprof):
+        return True
     await _resume_driver_registration(message, state, dprof)
     return True
 

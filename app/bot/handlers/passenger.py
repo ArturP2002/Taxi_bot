@@ -99,8 +99,13 @@ async def pick_direction(cb: CallbackQuery, state: FSMContext) -> None:
     await state.set_state(PassengerOrder.choosing_trip_date)
     now = datetime.now(timezone.utc)
     avail = scheduled_trip_service.available_dates_for_direction(did)
+    hint = (
+        "Выберите дату рейса (кнопки ниже) или «Как можно скорее» — без привязки к расписанию."
+    )
+    if not avail:
+        hint += "\n\nНа ближайшие месяцы рейсов пока нет — администратор добавит их в календаре."
     await cb.message.answer(
-        "Выберите дату рейса или «Ближайший рейс»:",
+        hint,
         reply_markup=keyboards.trip_calendar_kb(
             now.year, now.month, available_dates=avail, direction_id=did
         ),
