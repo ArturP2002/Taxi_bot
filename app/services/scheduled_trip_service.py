@@ -117,6 +117,8 @@ def release_seats(trip_id: int, seats: int) -> None:
 
 def is_order_in_live_queue(order: Order) -> bool:
     """Orders on future scheduled trips stay out of live queue until activated."""
+    if order.status == OrderStatus.AWAITING_SCHEDULED_TRIP.value:
+        return False
     if not order.scheduled_trip_id:
         return True
     if getattr(order, "scheduled_activated", False):

@@ -88,6 +88,16 @@
     .pv-stage img{max-width:min(100%,100vw);max-height:min(100%,70vh);object-fit:contain;transform-origin:center center;will-change:transform;user-select:none;-webkit-user-drag:none}
     .pv-toolbar{display:flex;gap:8px;justify-content:center;align-items:center;padding:12px 16px;padding-bottom:max(12px,env(safe-area-inset-bottom));flex-shrink:0;flex-wrap:wrap}
     .pv-toolbar .btn{min-width:44px;padding:10px 14px}
+    .users-search{display:flex;gap:8px;margin-bottom:12px;flex-wrap:wrap}
+    .users-search input{flex:1;min-width:140px;padding:10px 12px;background:var(--surface2);border:1px solid var(--border);border-radius:8px;color:var(--text);font-size:14px}
+    .users-table-wrap{overflow-x:auto;margin-bottom:12px;border:1px solid var(--border);border-radius:var(--radius)}
+    .users-table{width:100%;border-collapse:collapse;font-size:12px;min-width:640px}
+    .users-table th,.users-table td{padding:10px 8px;text-align:left;border-bottom:1px solid var(--border)}
+    .users-table th{color:var(--text-dim);font-weight:600;font-size:11px;text-transform:uppercase}
+    .users-table tr:last-child td{border-bottom:none}
+    .users-table tr.row-selected td{background:rgba(245,197,24,.08)}
+    .user-detail-panel{margin-top:16px}
+    .users-pager{display:flex;gap:8px;align-items:center;justify-content:center;margin:12px 0;flex-wrap:wrap}
     @media(max-width:360px){.stats-grid{grid-template-columns:1fr}.tab-btn{padding:7px 10px;font-size:12px}.card{padding:10px}.driver-photos-grid{grid-template-columns:1fr}}
   </style>
 </head>
@@ -101,6 +111,7 @@
   <div class="tabs" id="tabs">
     <button class="tab-btn active" data-tab="dashboard">Главная</button>
     <button class="tab-btn" data-tab="orders">Заказы</button>
+    <button class="tab-btn" data-tab="users">Пользователи</button>
     <button class="tab-btn" data-tab="drivers">Водители</button>
     <button class="tab-btn" data-tab="directions">Маршруты</button>
     <button class="tab-btn" data-tab="queue">Очередь</button>
@@ -137,6 +148,10 @@ var content = document.getElementById('content');
 var statusEl = document.getElementById('auth-status');
 var token = '';
 var cache = { orders: [], drivers: [], directions: [] };
+var pendingFulfillOrderId = null;
+var usersPage = 1;
+var usersSearchQ = '';
+var selectedUserTgId = null;
 
 var AUTH_ERRORS = {
   not_admin: 'Нет доступа. Добавьте ваш Telegram ID в ADMIN_TELEGRAM_IDS.',
@@ -514,6 +529,7 @@ function renderTab(tab) {
   var fn = {
     dashboard: renderDashboard,
     orders: renderOrders,
+    users: renderUsers,
     drivers: renderDrivers,
     directions: renderDirections,
     queue: renderQueue,
@@ -526,7 +542,7 @@ function renderTab(tab) {
 }
 
 function statusLabel(s) {
-  var m = { new:'Новый', assigned:'Назначен', in_progress:'В пути', completed:'Завершён', admin_review:'На проверке', awaiting_payment:'Ждёт оплату', cancelled:'Отменён', pending:'Ожидает', reserved:'В резерве', confirmed:'Подтверждён', awaiting_admin:'Ждёт админа', active:'Активен', suspicious:'На проверке', blocked:'Заблокирован', failed:'Ошибка', suggested:'Предложен' };
+  var m = { new:'Новый', awaiting_scheduled_trip:'Ждёт рейса', assigned:'Назначен', in_progress:'В пути', completed:'Завершён', admin_review:'На проверке', awaiting_payment:'Ждёт оплату', cancelled:'Отменён', pending:'Ожидает', reserved:'В резерве', confirmed:'Подтверждён', awaiting_admin:'Ждёт админа', active:'Активен', suspicious:'На проверке', blocked:'Заблокирован', failed:'Ошибка', suggested:'Предложен' };
   return m[s] || s;
 }
 function fmtHours(min) {
@@ -1474,14 +1490,54 @@ function doConfirmPayment(paymentId) {
 
 
 
+function prefillCalendarFromRequest(req) {
+  pendingFulfillOrderId = req.order_id;
+  var dirEl = document.getElementById('st-dir');
+  var depEl = document.getElementById('st-dep');
+  var seatsEl = document.getElementById('st-seats');
+  if (dirEl) dirEl.value = String(req.direction_id);
+  if (depEl) depEl.value = req.requested_departure_at || '';
+  if (seatsEl) seatsEl.value = String(Math.max(6, req.seats || 1));
+  toast('Заявка #' + req.order_id + ' — заполнена форма рейса');
+  var form = document.getElementById('st-form-card');
+  if (form) form.scrollIntoView({ behavior: 'smooth', block: 'start' });
+}
+
 function renderCalendar() {
-  Promise.all([api('/api/admin/scheduled-trips'), api('/api/admin/directions'), api('/api/admin/drivers')])
+  Promise.all([
+    api('/api/admin/scheduled-trips'),
+    api('/api/admin/directions'),
+    api('/api/admin/drivers'),
+    api('/api/admin/trip-departure-requests?status=pending')
+  ])
     .then(function(results) {
       var trips = ensureArray(results[0]);
       var directions = ensureArray(results[1]);
       var drivers = ensureArray(results[2]);
+      var requests = ensureArray(results[3]);
       cache.scheduledTrips = trips;
-      var html = '<div class="card"><div class="card-title">Новый рейс</div>';
+      var html = '';
+      if (requests.length) {
+        html += '<div class="card"><div class="card-title">Заявки на рейс (' + requests.length + ')</div>';
+        for (var ri = 0; ri < requests.length; ri++) {
+          var req = requests[ri];
+          html += '<div style="margin-bottom:12px;padding-bottom:12px;border-bottom:1px solid var(--border)">';
+          html += row('Заказ', '#' + req.order_id);
+          html += row('Пассажир', esc(req.display_name) + (req.username ? ' @' + esc(req.username) : ''));
+          html += row('Маршрут', esc(req.from_label + ' → ' + req.to_label));
+          html += row('Выезд', esc(req.requested_departure_at));
+          html += row('Места', req.seats);
+          html += row('Откуда / Куда', esc(req.from_location) + ' → ' + esc(req.to_location));
+          html += '<div class="actions"><button type="button" class="btn btn-gold" onclick="prefillCalendarFromRequest(cache.tripRequests[' + ri + '])">Создать рейс из заявки</button></div>';
+          html += '</div>';
+        }
+        html += '</div>';
+      }
+      cache.tripRequests = requests;
+      html += '<div class="card" id="st-form-card"><div class="card-title">Новый рейс</div>';
+      if (pendingFulfillOrderId) {
+        html += '<p style="font-size:12px;color:var(--gold);margin-bottom:10px">Привязка к заказу #' + pendingFulfillOrderId + ' <button type="button" class="btn btn-outline" style="padding:4px 10px;font-size:11px" onclick="pendingFulfillOrderId=null;renderCalendar()">Сбросить</button></p>';
+      }
       html += '<div class="form-group"><label>Направление</label><select id="st-dir">';
       for (var di = 0; di < directions.length; di++) {
         var dr = directions[di];
@@ -1529,13 +1585,135 @@ function createScheduledTrip() {
     driver_id: document.getElementById('st-driver').value ? +document.getElementById('st-driver').value : null,
     status: 'open'
   };
+  if (pendingFulfillOrderId) body.fulfill_order_id = pendingFulfillOrderId;
   if (!body.departure_at) { toast('Укажите дату выезда'); return; }
   if (!/^\d{1,2}\.\d{1,2}\.\d{4}\s+\d{1,2}:\d{2}$/.test(body.departure_at)) {
     toast('Формат: ДД.ММ.ГГГГ ЧЧ:ММ (например 25.05.2026 08:00)');
     return;
   }
   api('/api/admin/scheduled-trips', { method: 'POST', body: JSON.stringify(body) })
-    .then(function() { toast('Рейс создан'); renderCalendar(); })
+    .then(function() {
+      toast(pendingFulfillOrderId ? 'Рейс создан, пассажир привязан' : 'Рейс создан');
+      pendingFulfillOrderId = null;
+      renderCalendar();
+    })
+    .catch(function(e) { toast('Ошибка: ' + e.message); });
+}
+
+function renderUsers() {
+  var q = usersSearchQ;
+  api('/api/admin/users?q=' + encodeURIComponent(q) + '&page=' + usersPage + '&page_size=30')
+    .then(function(data) {
+      var items = ensureArray(data.items);
+      var html = '<div class="card"><div class="card-title">Пользователи</div>';
+      html += '<div class="users-search">';
+      html += '<input id="users-q" placeholder="ID или @username / имя" value="' + esc(q) + '"/>';
+      html += '<button type="button" class="btn btn-gold" onclick="usersSearchSubmit()">Поиск</button></div>';
+      if (!items.length) {
+        html += '<div class="empty">Нет пользователей</div></div>';
+        content.innerHTML = html;
+        return;
+      }
+      html += '<div class="users-table-wrap"><table class="users-table"><thead><tr>';
+      html += '<th>ID</th><th>Username</th><th>Имя</th><th>Рег.</th><th>Заказов</th><th>Заверш.</th><th>Ждёт рейс</th><th>Статус</th><th></th>';
+      html += '</tr></thead><tbody>';
+      for (var i = 0; i < items.length; i++) {
+        var u = items[i];
+        var sel = selectedUserTgId === u.telegram_id ? ' row-selected' : '';
+        html += '<tr class="' + sel + '">';
+        html += '<td>' + u.telegram_id + '</td>';
+        html += '<td>' + (u.username ? '@' + esc(u.username) : '—') + '</td>';
+        html += '<td>' + esc(u.display_name) + '</td>';
+        html += '<td>' + esc((u.created_at || '').slice(0, 10)) + '</td>';
+        html += '<td>' + (u.orders_total || 0) + '</td>';
+        html += '<td>' + (u.orders_completed || 0) + '</td>';
+        html += '<td>' + (u.orders_awaiting_trip || 0) + '</td>';
+        html += '<td><span class="badge b-' + (u.status === 'blocked' ? 'blocked' : 'active') + '">' + esc(u.status === 'blocked' ? 'blocked' : 'ok') + '</span></td>';
+        html += '<td><button type="button" class="btn btn-outline" style="padding:6px 10px;font-size:11px" onclick="showUserDetail(' + u.telegram_id + ')">Подробнее</button></td>';
+        html += '</tr>';
+      }
+      html += '</tbody></table></div>';
+      html += '<div class="users-pager">';
+      if (data.page > 1) html += '<button type="button" class="btn btn-outline" onclick="usersGoPage(' + (data.page - 1) + ')">Назад</button>';
+      html += '<span style="font-size:13px;color:var(--text-dim)">стр. ' + data.page + ' · всего ' + data.total + '</span>';
+      if (data.page < data.total_pages) html += '<button type="button" class="btn btn-outline" onclick="usersGoPage(' + (data.page + 1) + ')">Вперёд</button>';
+      html += '</div></div>';
+      html += '<div id="user-detail-panel" class="user-detail-panel"></div>';
+      content.innerHTML = html;
+      if (selectedUserTgId) showUserDetail(selectedUserTgId, true);
+    })
+    .catch(function(e) { content.innerHTML = '<div class="empty">Ошибка: ' + e.message + '</div>'; });
+}
+
+function usersSearchSubmit() {
+  var el = document.getElementById('users-q');
+  usersSearchQ = el ? el.value.trim() : '';
+  usersPage = 1;
+  selectedUserTgId = null;
+  renderUsers();
+}
+
+function usersGoPage(p) {
+  usersPage = p;
+  renderUsers();
+}
+
+function showUserDetail(telegramId, skipRerender) {
+  selectedUserTgId = telegramId;
+  if (!skipRerender) renderUsers();
+  api('/api/admin/users/' + telegramId)
+    .then(function(u) {
+      var panel = document.getElementById('user-detail-panel');
+      if (!panel) return;
+      var html = '<div class="card"><div class="card-title">Пользователь ' + u.telegram_id + '</div>';
+      html += row('Username', u.username ? '@' + esc(u.username) : '—');
+      html += row('Имя', esc(u.display_name));
+      html += row('Регистрация', esc((u.created_at || '').slice(0, 19)));
+      html += row('Последняя активность', esc(u.last_seen_at ? u.last_seen_at.slice(0, 19) : (u.last_order_at || '—')));
+      html += row('Заказов', String(u.orders_total));
+      html += row('Завершено', String(u.orders_completed));
+      html += row('Ждёт рейса', String(u.orders_awaiting_trip));
+      html += row('Статус', u.is_blocked ? 'заблокирован' : 'ok');
+      if (u.pending_trip_requests && u.pending_trip_requests.length) {
+        html += '<p style="font-size:12px;color:var(--gold);margin-top:10px">Ожидают рейса:</p>';
+        for (var pi = 0; pi < u.pending_trip_requests.length; pi++) {
+          var pr = u.pending_trip_requests[pi];
+          html += '<p style="font-size:12px;margin:4px 0">#' + pr.order_id + ' · ' + esc(pr.requested_departure || '') + ' · ' + pr.seats + ' мест</p>';
+        }
+      }
+      if (u.orders && u.orders.length) {
+        html += '<p style="font-size:12px;color:var(--text-dim);margin-top:12px;font-weight:600">Последние заказы</p>';
+        for (var oi = 0; oi < u.orders.length; oi++) {
+          var o = u.orders[oi];
+          html += '<p style="font-size:12px;margin:4px 0">#' + o.id + ' · ' + esc(statusLabel(o.status)) + ' · ' + esc(o.from_label + ' → ' + o.to_label);
+          if (o.trip_departure) html += ' · рейс ' + esc(o.trip_departure);
+          html += '</p>';
+        }
+      }
+      html += '<div class="actions">';
+      html += tgLink(u.telegram_id, 'Написать в Telegram');
+      if (u.is_blocked) {
+        html += '<button type="button" class="btn btn-outline" onclick="unblockUser(' + u.telegram_id + ')">Разблокировать</button>';
+      } else {
+        html += '<button type="button" class="btn btn-danger" onclick="blockUser(' + u.telegram_id + ')">Заблокировать</button>';
+      }
+      html += '</div></div>';
+      panel.innerHTML = html;
+      panel.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    })
+    .catch(function(e) { toast('Ошибка: ' + e.message); });
+}
+
+function blockUser(tid) {
+  if (!confirm('Заблокировать пользователя ' + tid + '?')) return;
+  api('/api/admin/users/' + tid + '/block', { method: 'POST' })
+    .then(function() { toast('Заблокирован'); showUserDetail(tid, true); renderUsers(); })
+    .catch(function(e) { toast('Ошибка: ' + e.message); });
+}
+
+function unblockUser(tid) {
+  api('/api/admin/users/' + tid + '/unblock', { method: 'POST' })
+    .then(function() { toast('Разблокирован'); showUserDetail(tid, true); renderUsers(); })
     .catch(function(e) { toast('Ошибка: ' + e.message); });
 }
 

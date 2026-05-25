@@ -129,6 +129,16 @@ MIGRATIONS: list[tuple[str, list[str]]] = [
             "ALTER TABLE orders ADD COLUMN scheduled_activated INTEGER DEFAULT 0",
         ],
     ),
+    (
+        "20260525_v9_trip_requests_users",
+        [
+            "ALTER TABLE orders ADD COLUMN requested_departure_at TEXT",
+            "ALTER TABLE users ADD COLUMN first_name VARCHAR(255)",
+            "ALTER TABLE users ADD COLUMN last_name VARCHAR(255)",
+            "ALTER TABLE users ADD COLUMN is_blocked INTEGER DEFAULT 0",
+            "ALTER TABLE users ADD COLUMN last_seen_at TEXT",
+        ],
+    ),
 ]
 
 

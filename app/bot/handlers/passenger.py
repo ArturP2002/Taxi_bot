@@ -49,7 +49,23 @@ async def _show_directions_page(message_or_cb, state: FSMContext, page: int = 0,
         await message_or_cb.answer(text, reply_markup=kb)
 
 
+def _passenger_blocked(user) -> bool:
+    from app.models import User
+
+    try:
+        u = User.get(telegram_id=user.id)
+        return bool(getattr(u, "is_blocked", False))
+    except Exception:
+        return False
+
+
 async def continue_start_order(message: Message, state: FSMContext) -> None:
+    ensure_user(message.from_user)
+    if _passenger_blocked(message.from_user):
+        await message.answer(
+            "Доступ ограничен. Обратитесь к администратору сервиса."
+        )
+        return
     await send_passenger_rules(message)
     directions = direction_search.list_enabled_directions()
     if not directions:
@@ -133,9 +149,20 @@ async def trip_calendar_cb(cb: CallbackQuery, state: FSMContext) -> None:
         await cb.answer()
         return
     if action == "asap":
-        await state.update_data(scheduled_trip_id=None)
+        await state.update_data(scheduled_trip_id=None, requested_departure_at=None)
         await state.set_state(PassengerOrder.from_location)
         await cb.message.answer("Точка отправления (текстом):", reply_markup=keyboards.cancel_kb())
+        await cb.answer()
+        return
+    if action == "custom":
+        from app.util.time_format import DATETIME_DISPLAY_HINT
+
+        await state.update_data(scheduled_trip_id=None)
+        await state.set_state(PassengerOrder.requested_departure)
+        await cb.message.answer(
+            f"Укажите желаемую дату и время выезда.\nФормат: {DATETIME_DISPLAY_HINT}",
+            reply_markup=keyboards.cancel_kb(),
+        )
         await cb.answer()
         return
     if action == "day":
@@ -145,7 +172,7 @@ async def trip_calendar_cb(cb: CallbackQuery, state: FSMContext) -> None:
             await cb.answer("Нет рейсов на эту дату", show_alert=True)
             return
         if len(trips) == 1:
-            await state.update_data(scheduled_trip_id=trips[0].id)
+            await state.update_data(scheduled_trip_id=trips[0].id, requested_departure_at=None)
             await state.set_state(PassengerOrder.from_location)
             from app.util.time_format import format_datetime_display
 
@@ -164,12 +191,52 @@ async def trip_calendar_cb(cb: CallbackQuery, state: FSMContext) -> None:
         return
     if action == "trip":
         trip_id = int(parts[2])
-        await state.update_data(scheduled_trip_id=trip_id)
+        await state.update_data(scheduled_trip_id=trip_id, requested_departure_at=None)
         await state.set_state(PassengerOrder.from_location)
         await cb.message.answer("Точка отправления (текстом):", reply_markup=keyboards.cancel_kb())
         await cb.answer()
         return
     await cb.answer()
+
+
+@router.message(PassengerOrder.requested_departure, F.text)
+async def requested_departure_enter(message: Message, state: FSMContext) -> None:
+    if message.text == "❌ Отмена":
+        await state.clear()
+        await message.answer("Отменено.", reply_markup=keyboards.main_passenger_kb())
+        return
+    from app.util.time_format import parse_datetime_display, DATETIME_DISPLAY_HINT
+    from app.services import trip_request_service
+
+    try:
+        dep = parse_datetime_display(message.text.strip())
+        trip_request_service.validate_requested_departure(dep)
+    except ValueError as e:
+        err = str(e)
+        if err == "departure_in_past":
+            await message.answer("Укажите дату и время в будущем.")
+            return
+        if err == "departure_too_far":
+            settings = get_settings()
+            await message.answer(
+                f"Дата слишком далеко. Максимум на "
+                f"{settings.scheduled_trip_booking_days_ahead} дней вперёд."
+            )
+            return
+        await message.answer(f"Неверный формат. {DATETIME_DISPLAY_HINT}")
+        return
+    await state.update_data(
+        requested_departure_at=dep.isoformat(),
+        scheduled_trip_id=None,
+    )
+    await state.set_state(PassengerOrder.from_location)
+    from app.util.time_format import format_datetime_display
+
+    await message.answer(
+        f"Желаемый выезд: {format_datetime_display(dep)}\n"
+        "Точка отправления (текстом):",
+        reply_markup=keyboards.cancel_kb(),
+    )
 
 
 @router.message(PassengerOrder.from_location, F.text)
@@ -217,17 +284,31 @@ async def phone_enter(message: Message, state: FSMContext, bot: Bot) -> None:
     data = await state.get_data()
     await state.clear()
     user = ensure_user(message.from_user)
+    if getattr(user, "is_blocked", False):
+        await message.answer(
+            "Доступ ограничен. Обратитесь к администратору сервиса.",
+            reply_markup=keyboards.main_passenger_kb(),
+        )
+        return
     direction = Direction.get_by_id(data["direction_id"])
-    code = code_service.generate_six_digit_code()
     now = datetime.now(timezone.utc)
+    requested_iso = data.get("requested_departure_at")
+    is_trip_request = bool(requested_iso) and not data.get("scheduled_trip_id")
 
     pay_status = PassengerPaymentStatus.NOT_REQUIRED.value
     order_status = OrderStatus.NEW.value
-    if getattr(direction, "online_payment_required", False):
+    if is_trip_request:
+        order_status = OrderStatus.AWAITING_SCHEDULED_TRIP.value
+    elif getattr(direction, "online_payment_required", False):
         pay_status = PassengerPaymentStatus.AWAITING.value
         order_status = OrderStatus.AWAITING_PAYMENT.value
 
     trip_id = data.get("scheduled_trip_id")
+    requested_dep = None
+    if requested_iso:
+        requested_dep = datetime.fromisoformat(requested_iso)
+        if requested_dep.tzinfo is None:
+            requested_dep = requested_dep.replace(tzinfo=timezone.utc)
     scheduled_activated = False
     trip_label = ""
     if trip_id:
@@ -257,17 +338,53 @@ async def phone_enter(message: Message, state: FSMContext, bot: Bot) -> None:
         phone=message.text.strip(),
         status=order_status,
         passenger_payment_status=pay_status,
-        confirmation_code_hash="tmp",
-        code_issued_at=now,
+        confirmation_code_hash="pending" if is_trip_request else "tmp",
+        code_issued_at=None if is_trip_request else now,
         scheduled_trip_id=int(trip_id) if trip_id else None,
         scheduled_activated=scheduled_activated,
+        requested_departure_at=requested_dep,
     )
-    code_service.persist_boarding_code(order.id, code)
+    code = None
+    if not is_trip_request:
+        code = code_service.generate_six_digit_code()
+        code_service.persist_boarding_code(order.id, code)
     order = Order.get_by_id(order.id)
     from app.services import loading_service
 
     pool = loading_service.direction_waiting_pool(direction.id)
     loading_cars = loading_service.drivers_loading_on_direction(direction.id)
+    if is_trip_request:
+        from app.util.time_format import format_datetime_display
+        from app.services import trip_request_service
+        from app.services.admin_notify import notify_trip_departure_request
+
+        dep_label = format_datetime_display(requested_dep)
+        caption = (
+            f"✅ Заявка принята · #{order.id}\n"
+            f"📍 {direction.from_label} → {direction.to_label}\n"
+            f"🕐 Желаемый выезд: {dep_label}\n"
+            f"Откуда: {order.from_location}\n"
+            f"Куда: {order.to_location}\n"
+            f"Мест: {order.seats}\n\n"
+            "Администратор создаст рейс в календаре и привяжет ваш заказ.\n"
+            "Код посадки и QR придут после подтверждения рейса.\n"
+            "«📞 Связь с админом» — в любой момент."
+        )
+        await message.answer(caption, reply_markup=keyboards.main_passenger_kb())
+        await notify_trip_departure_request(
+            bot,
+            order.id,
+            direction_from=direction.from_label,
+            direction_to=direction.to_label,
+            departure_display=dep_label,
+            from_loc=order.from_location,
+            to_loc=order.to_location,
+            seats=order.seats,
+            phone=order.phone,
+            passenger_label=trip_request_service.user_display_name(user),
+        )
+        return
+
     caption = (
         bot_messages.format_order_summary(order, direction)
         + trip_label

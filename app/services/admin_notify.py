@@ -36,6 +36,33 @@ async def notify_admins(bot: Bot, text: str, extra_kb: Optional[InlineKeyboardMa
             logger.warning("Failed to notify admin %s: %s", admin_id, e)
 
 
+async def notify_trip_departure_request(
+    bot: Bot,
+    order_id: int,
+    *,
+    direction_from: str,
+    direction_to: str,
+    departure_display: str,
+    from_loc: str,
+    to_loc: str,
+    seats: int,
+    phone: str,
+    passenger_label: str,
+) -> None:
+    text = (
+        f"📅 Заявка на рейс · заказ #{order_id}\n"
+        f"👤 {passenger_label}\n"
+        f"📍 {direction_from} → {direction_to}\n"
+        f"🕐 Желаемый выезд: {departure_display}\n"
+        f"Откуда: {from_loc}\n"
+        f"Куда: {to_loc}\n"
+        f"Мест: {seats}\n"
+        f"Тел: {phone}\n\n"
+        "Создайте рейс в админке → Календарь → «Создать рейс из заявки»."
+    )
+    await notify_admins(bot, text)
+
+
 async def notify_new_order(bot: Bot, order_id: int, direction_from: str, direction_to: str,
                            from_loc: str, to_loc: str, seats: int,
                            suggested_driver_name: str | None = None,

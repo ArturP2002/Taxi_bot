@@ -264,6 +264,12 @@ def trip_calendar_kb(
             callback_data=f"tcal:asap:{direction_id}",
         )
     ])
+    rows.append([
+        InlineKeyboardButton(
+            text="📝 Указать свою дату и время",
+            callback_data=f"tcal:custom:{direction_id}",
+        )
+    ])
     month_dates = sorted(d for d in available_dates if d.year == year and d.month == month)
     if month_dates:
         for d in month_dates:

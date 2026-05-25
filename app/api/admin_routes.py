@@ -1656,6 +1656,60 @@ class ScheduledTripCreate(BaseModel):
     driver_id: Optional[int] = None
     status: str = "open"
     note: Optional[str] = None
+    fulfill_order_id: Optional[int] = None
+
+
+class TripDepartureRequestOut(BaseModel):
+    order_id: int
+    telegram_id: int
+    username: Optional[str] = None
+    display_name: str
+    direction_id: int
+    from_label: str
+    to_label: str
+    requested_departure_at: str
+    from_location: str
+    to_location: str
+    seats: int
+    phone: str
+    created_at: str
+
+
+class AdminUserOut(BaseModel):
+    telegram_id: int
+    username: Optional[str] = None
+    display_name: str
+    created_at: str
+    orders_total: int = 0
+    orders_completed: int = 0
+    orders_awaiting_trip: int = 0
+    last_order_at: Optional[str] = None
+    is_blocked: bool = False
+    status: str = "ok"
+
+
+class AdminUserDetailOut(BaseModel):
+    telegram_id: int
+    username: Optional[str] = None
+    first_name: Optional[str] = None
+    last_name: Optional[str] = None
+    display_name: str
+    created_at: str
+    last_seen_at: Optional[str] = None
+    is_blocked: bool = False
+    orders_total: int = 0
+    orders_completed: int = 0
+    orders_awaiting_trip: int = 0
+    orders: List[dict] = []
+    pending_trip_requests: List[dict] = []
+
+
+class AdminUsersPageOut(BaseModel):
+    items: List[AdminUserOut]
+    page: int
+    page_size: int
+    total: int
+    total_pages: int
 
 
 class ScheduledTripPatch(BaseModel):
@@ -1718,9 +1772,239 @@ def list_scheduled_trips(
     return [_trip_out(t) for t in rows]
 
 
+def _trip_request_out(order: Order) -> TripDepartureRequestOut:
+    from app.services import trip_request_service
+    from app.util.time_format import format_datetime_display
+
+    d = Direction.get_by_id(order.direction_id)
+    passenger = User.get_by_id(order.passenger_id)
+    return TripDepartureRequestOut(
+        order_id=order.id,
+        telegram_id=passenger.telegram_id,
+        username=passenger.username,
+        display_name=trip_request_service.user_display_name(passenger),
+        direction_id=order.direction_id,
+        from_label=d.from_label,
+        to_label=d.to_label,
+        requested_departure_at=format_datetime_display(order.requested_departure_at),
+        from_location=order.from_location,
+        to_location=order.to_location,
+        seats=order.seats,
+        phone=order.phone,
+        created_at=str(order.created_at),
+    )
+
+
+def _user_order_stats(user_id: int) -> dict:
+    from app.models.order import OrderStatus
+
+    orders = list(Order.select().where(Order.passenger_id == user_id))
+    total = len(orders)
+    completed = sum(1 for o in orders if o.status == OrderStatus.COMPLETED.value)
+    awaiting = sum(
+        1 for o in orders if o.status == OrderStatus.AWAITING_SCHEDULED_TRIP.value
+    )
+    last_at = None
+    if orders:
+        last = max(orders, key=lambda o: o.id)
+        last_at = str(last.updated_at or last.created_at)
+    return {
+        "orders_total": total,
+        "orders_completed": completed,
+        "orders_awaiting_trip": awaiting,
+        "last_order_at": last_at,
+    }
+
+
+@router.get("/trip-departure-requests", response_model=List[TripDepartureRequestOut])
+def list_trip_departure_requests(status: str = "pending") -> Any:
+    from app.models.order import OrderStatus
+    from app.services import trip_request_service
+
+    if status != "pending":
+        raise HTTPException(400, "unsupported_status")
+    return [_trip_request_out(o) for o in trip_request_service.list_pending_requests()]
+
+
+@router.get("/users", response_model=AdminUsersPageOut)
+def list_admin_users(
+    q: str = "",
+    page: int = Query(1, ge=1),
+    page_size: int = Query(30, ge=1, le=100),
+) -> Any:
+    from app.models.user import UserRole
+    from app.services import trip_request_service
+
+    query = User.select().where(User.role == UserRole.PASSENGER.value)
+    raw_q = (q or "").strip()
+    if raw_q:
+        if raw_q.isdigit():
+            query = query.where(User.telegram_id == int(raw_q))
+        else:
+            like = f"%{raw_q.lstrip('@')}%"
+            query = query.where(
+                (User.username ** like)
+                | (User.first_name ** like)
+                | (User.last_name ** like)
+            )
+    all_users = list(query.order_by(User.id.desc()))
+    total = len(all_users)
+    total_pages = max(1, (total + page_size - 1) // page_size)
+    start = (page - 1) * page_size
+    chunk = all_users[start : start + page_size]
+    items: List[AdminUserOut] = []
+    for u in chunk:
+        stats = _user_order_stats(u.id)
+        blocked = bool(getattr(u, "is_blocked", False))
+        items.append(
+            AdminUserOut(
+                telegram_id=u.telegram_id,
+                username=u.username,
+                display_name=trip_request_service.user_display_name(u),
+                created_at=str(u.created_at)[:10],
+                is_blocked=blocked,
+                status="blocked" if blocked else "ok",
+                **stats,
+            )
+        )
+    return AdminUsersPageOut(
+        items=items,
+        page=page,
+        page_size=page_size,
+        total=total,
+        total_pages=total_pages,
+    )
+
+
+@router.get("/users/{telegram_id}", response_model=AdminUserDetailOut)
+def get_admin_user(telegram_id: int) -> Any:
+    from app.models.order import OrderStatus
+    from app.services import trip_request_service
+    from app.util.time_format import format_datetime_display
+
+    try:
+        u = User.get(User.telegram_id == telegram_id)
+    except Exception:
+        raise HTTPException(404, "user_not_found") from None
+    stats = _user_order_stats(u.id)
+    orders_rows = (
+        Order.select()
+        .where(Order.passenger_id == u.id)
+        .order_by(Order.id.desc())
+        .limit(20)
+    )
+    orders = []
+    for o in orders_rows:
+        d = Direction.get_by_id(o.direction_id)
+        trip_label = None
+        if o.scheduled_trip_id:
+            from app.models.scheduled_trip import ScheduledTrip
+
+            try:
+                trip = ScheduledTrip.get_by_id(o.scheduled_trip_id)
+                trip_label = format_datetime_display(trip.departure_at)
+            except Exception:
+                pass
+        orders.append(
+            {
+                "id": o.id,
+                "status": o.status,
+                "from_label": d.from_label,
+                "to_label": d.to_label,
+                "seats": o.seats,
+                "trip_departure": trip_label,
+                "requested_departure": format_datetime_display(o.requested_departure_at)
+                if o.requested_departure_at
+                else None,
+                "created_at": str(o.created_at)[:19],
+            }
+        )
+    pending = [
+        {
+            "order_id": o.id,
+            "requested_departure": format_datetime_display(o.requested_departure_at),
+            "from_location": o.from_location,
+            "to_location": o.to_location,
+            "seats": o.seats,
+        }
+        for o in Order.select()
+        .where(
+            (Order.passenger_id == u.id)
+            & (Order.status == OrderStatus.AWAITING_SCHEDULED_TRIP.value)
+        )
+        .order_by(Order.id.desc())
+    ]
+    return AdminUserDetailOut(
+        telegram_id=u.telegram_id,
+        username=u.username,
+        first_name=getattr(u, "first_name", None),
+        last_name=getattr(u, "last_name", None),
+        display_name=trip_request_service.user_display_name(u),
+        created_at=str(u.created_at),
+        last_seen_at=str(u.last_seen_at) if getattr(u, "last_seen_at", None) else None,
+        is_blocked=bool(getattr(u, "is_blocked", False)),
+        orders=orders,
+        pending_trip_requests=pending,
+        **stats,
+    )
+
+
+@router.post("/users/{telegram_id}/block")
+def block_admin_user(telegram_id: int, user: User = Depends(require_admin)) -> Any:
+    n = User.update(is_blocked=True).where(User.telegram_id == telegram_id).execute()
+    if not n:
+        raise HTTPException(404, "user_not_found")
+    audit_service.log_action(
+        "user_blocked",
+        actor_telegram_id=user.telegram_id,
+        entity_type="user",
+        entity_id=str(telegram_id),
+    )
+    return {"ok": True}
+
+
+@router.post("/users/{telegram_id}/unblock")
+def unblock_admin_user(telegram_id: int, user: User = Depends(require_admin)) -> Any:
+    n = User.update(is_blocked=False).where(User.telegram_id == telegram_id).execute()
+    if not n:
+        raise HTTPException(404, "user_not_found")
+    audit_service.log_action(
+        "user_unblocked",
+        actor_telegram_id=user.telegram_id,
+        entity_type="user",
+        entity_id=str(telegram_id),
+    )
+    return {"ok": True}
+
+
+@router.post("/orders/{order_id}/attach-scheduled-trip")
+async def attach_order_scheduled_trip(
+    order_id: int,
+    request: Request,
+    trip_id: int = Query(...),
+    user: User = Depends(require_admin),
+) -> Any:
+    from app.models.scheduled_trip import ScheduledTrip
+    from app.services import trip_request_service
+
+    trip = ScheduledTrip.get_by_id(trip_id)
+    bot = _bot(request)
+    try:
+        await trip_request_service.fulfill_and_notify(
+            bot, order_id, trip, actor_telegram_id=user.telegram_id
+        )
+    except ValueError as e:
+        raise HTTPException(400, str(e)) from e
+    return {"ok": True, "order_id": order_id, "trip_id": trip_id}
+
+
 @router.post("/scheduled-trips", response_model=ScheduledTripOut)
-def create_scheduled_trip(body: ScheduledTripCreate, user: User = Depends(require_admin)) -> Any:
-    from app.services import scheduled_trip_service
+async def create_scheduled_trip(
+    body: ScheduledTripCreate,
+    request: Request,
+    user: User = Depends(require_admin),
+) -> Any:
+    from app.services import scheduled_trip_service, trip_request_service
     from app.models.scheduled_trip import ScheduledTripCreatedBy
 
     from app.util.time_format import parse_datetime_display
@@ -1729,6 +2013,12 @@ def create_scheduled_trip(body: ScheduledTripCreate, user: User = Depends(requir
         dep = parse_datetime_display(body.departure_at)
     except ValueError as e:
         raise HTTPException(400, str(e)) from e
+    if body.fulfill_order_id:
+        order = Order.get_by_id(body.fulfill_order_id)
+        if order.direction_id != body.direction_id:
+            raise HTTPException(400, "direction_mismatch")
+        if int(body.seats_total) < int(order.seats):
+            raise HTTPException(400, "not_enough_seats")
     t = scheduled_trip_service.create_trip(
         direction_id=body.direction_id,
         departure_at=dep,
@@ -1744,6 +2034,14 @@ def create_scheduled_trip(body: ScheduledTripCreate, user: User = Depends(requir
         entity_type="scheduled_trip",
         entity_id=str(t.id),
     )
+    if body.fulfill_order_id:
+        bot = _bot(request)
+        try:
+            await trip_request_service.fulfill_and_notify(
+                bot, body.fulfill_order_id, t, actor_telegram_id=user.telegram_id
+            )
+        except ValueError as e:
+            raise HTTPException(400, str(e)) from e
     return _trip_out(t)
 
 

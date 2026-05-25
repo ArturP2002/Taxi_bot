@@ -29,6 +29,7 @@ class PassengerPaymentStatus(str, enum.Enum):
 
 class OrderStatus(str, enum.Enum):
     NEW = "new"
+    AWAITING_SCHEDULED_TRIP = "awaiting_scheduled_trip"
     AWAITING_PAYMENT = "awaiting_payment"
     ASSIGNED = "assigned"
     IN_PROGRESS = "in_progress"
@@ -71,6 +72,7 @@ class Order(BaseModel):
         ScheduledTrip, null=True, backref="orders", on_delete="SET NULL"
     )
     scheduled_activated = BooleanField(default=False)
+    requested_departure_at = DateTimeField(null=True)
     created_at = DateTimeField(default=utcnow)
     updated_at = DateTimeField(null=True)
 
