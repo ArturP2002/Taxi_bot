@@ -1795,6 +1795,22 @@ def _trip_request_out(order: Order) -> TripDepartureRequestOut:
     )
 
 
+def _passenger_user_ids() -> set[int]:
+    """Users who used the bot as passengers (not only role=passenger)."""
+    from app.models.passenger import PassengerProfile
+    from app.models.user import UserRole
+
+    ids: set[int] = set()
+    for u in User.select(User.id).where(User.role == UserRole.PASSENGER.value):
+        ids.add(u.id)
+    for row in PassengerProfile.select(PassengerProfile.user_id):
+        ids.add(int(row.user_id))
+    for row in Order.select(Order.passenger_id).distinct():
+        if row.passenger_id:
+            ids.add(int(row.passenger_id))
+    return ids
+
+
 def _user_order_stats(user_id: int) -> dict:
     from app.models.order import OrderStatus
 
@@ -1832,10 +1848,18 @@ def list_admin_users(
     page: int = Query(1, ge=1),
     page_size: int = Query(30, ge=1, le=100),
 ) -> Any:
-    from app.models.user import UserRole
     from app.services import trip_request_service
 
-    query = User.select().where(User.role == UserRole.PASSENGER.value)
+    passenger_ids = _passenger_user_ids()
+    if not passenger_ids:
+        return AdminUsersPageOut(
+            items=[],
+            page=page,
+            page_size=page_size,
+            total=0,
+            total_pages=1,
+        )
+    query = User.select().where(User.id.in_(list(passenger_ids)))
     raw_q = (q or "").strip()
     if raw_q:
         if raw_q.isdigit():
