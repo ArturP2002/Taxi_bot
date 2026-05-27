@@ -251,11 +251,16 @@ def driver_offer_consent_kb(agreed: bool, offer_url: str) -> InlineKeyboardMarku
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-def contact_user_inline(telegram_id: int, label: str = "💬 Написать") -> InlineKeyboardMarkup:
-    from app.util.telegram_links import user_chat_url
+def contact_user_inline(
+    telegram_id: int,
+    label: str = "💬 Написать",
+    *,
+    username: str | None = None,
+) -> InlineKeyboardMarkup:
+    from app.util.telegram_links import telegram_open_url
 
     ib = InlineKeyboardBuilder()
-    ib.button(text=label, url=user_chat_url(telegram_id))
+    ib.button(text=label, url=telegram_open_url(telegram_id=telegram_id, username=username))
     return ib.as_markup()
 
 

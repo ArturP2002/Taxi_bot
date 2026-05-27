@@ -6,13 +6,18 @@ from datetime import datetime, timezone
 from typing import Optional, Union
 
 DATETIME_DISPLAY_FMT = "%d.%m.%Y %H:%M"
-DATETIME_DISPLAY_HINT = "ДД.ММ.ГГГГ ЧЧ:ММ (например 25.05.2026 08:00)"
+DATETIME_DISPLAY_HINT = (
+    "ДД.ММ.ГГГГ ЧЧ:ММ (например 25.05.2026 08:00 или 29.05.2026 08.00)"
+)
 
 _DISPLAY_RE_COLON = re.compile(
     r"^(\d{1,2})\.(\d{1,2})\.(\d{4})\s+(\d{1,2}):(\d{2})$"
 )
 _DISPLAY_RE_DOT = re.compile(
     r"^(\d{1,2})\.(\d{1,2})\.(\d{4})\s+(\d{1,2})\.(\d{2})$"
+)
+_DISPLAY_RE_FLEX = re.compile(
+    r"^(\d{1,2})[.\-/](\d{1,2})[.\-/](\d{2,4})\s+(\d{1,2})[\s:.,-](\d{1,2})$"
 )
 
 
@@ -35,11 +40,20 @@ def format_datetime_display(dt: Optional[Union[datetime, str]]) -> str:
 def parse_datetime_display(text: str) -> datetime:
     """Parse ДД.ММ.ГГГГ ЧЧ:ММ / ДД.ММ.ГГГГ ЧЧ.ММ (or ISO) to UTC datetime."""
     raw = (text or "").strip()
+    # Be lenient with common human input: commas, dashes, extra punctuation.
+    raw = raw.replace("—", "-").replace("–", "-").replace(",", ".")
+    raw = re.sub(r"\s+", " ", raw).strip(" ;,")
     if not raw:
         raise ValueError(DATETIME_DISPLAY_HINT)
     m = _DISPLAY_RE_COLON.match(raw) or _DISPLAY_RE_DOT.match(raw)
     if m:
         day, month, year, hour, minute = (int(x) for x in m.groups())
+        return datetime(year, month, day, hour, minute, tzinfo=timezone.utc)
+    m = _DISPLAY_RE_FLEX.match(raw)
+    if m:
+        day, month, year, hour, minute = (int(x) for x in m.groups())
+        if year < 100:
+            year += 2000
         return datetime(year, month, day, hour, minute, tzinfo=timezone.utc)
     try:
         dt = datetime.strptime(raw, DATETIME_DISPLAY_FMT)

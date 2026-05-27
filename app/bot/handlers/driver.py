@@ -1313,7 +1313,10 @@ async def driver_create_trip_datetime(message: Message, state: FSMContext) -> No
     except ValueError:
         await message.answer(f"Формат: {DATETIME_DISPLAY_HINT}")
         return
+    from app.util.time_format import format_datetime_display
+
     await state.update_data(trip_departure_at=dep.isoformat())
+    await message.answer(f"Принято: {format_datetime_display(dep)}")
     await state.set_state(DriverCreateTrip.seats)
     dprof = _driver(message)
     await message.answer(f"Сколько мест в рейсе (1–{dprof.max_seats or 8})?")

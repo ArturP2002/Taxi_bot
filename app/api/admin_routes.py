@@ -869,6 +869,7 @@ class DriverOut(BaseModel):
 
     id: int
     telegram_id: int
+    username: Optional[str] = None
     full_name: Optional[str]
     car_info: Optional[str] = None
     phone: Optional[str] = None
@@ -951,6 +952,7 @@ def list_drivers() -> Any:
             DriverOut(
                 id=d.id,
                 telegram_id=u.telegram_id,
+                username=u.username,
                 full_name=d.full_name,
                 car_info=d.car_info,
                 phone=d.phone,

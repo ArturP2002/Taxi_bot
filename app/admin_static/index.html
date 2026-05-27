@@ -563,20 +563,23 @@ function queueDriverStatus(q) {
 
 function h(tag, cls, inner) { return '<' + tag + (cls ? ' class="' + cls + '"' : '') + '>' + (inner || '') + '</' + tag + '>'; }
 function row(label, value) { return '<div class="row"><span class="lbl">' + label + '</span><span class="val">' + value + '</span></div>'; }
-function openTelegramUserById(tid) {
-  if (!tid) return;
-  var webUrl = 'https://t.me/' + tid;
+function openTelegramChat(tid, username) {
+  if (!tid && !username) return;
+  var uname = username ? String(username).replace(/^@/, '').trim() : '';
+  var url = uname ? ('https://t.me/' + uname) : ('tg://user?id=' + tid);
   try {
     if (tg && typeof tg.openTelegramLink === 'function') {
-      tg.openTelegramLink(webUrl);
+      tg.openTelegramLink(url);
       return;
     }
   } catch (e) {}
-  window.location.href = 'tg://user?id=' + tid;
+  window.location.href = url;
 }
-function tgLink(tid, label) {
-  if (!tid) return esc(label || '—');
-  return '<button type="button" class="btn btn-outline" style="padding:4px 10px;font-size:11px" onclick="openTelegramUserById(' + tid + ')">' + esc(label || ('TG ' + tid)) + '</button>';
+function tgLink(tid, username, label) {
+  if (!tid && !username) return esc(label || '—');
+  var uname = username ? String(username).replace(/^@/, '').trim() : '';
+  var safeUser = uname.replace(/\\/g, '\\\\').replace(/'/g, "\\'");
+  return '<button type="button" class="btn btn-outline" style="padding:4px 10px;font-size:11px" onclick="openTelegramChat(' + tid + ',\'' + safeUser + '\')">' + esc(label || ('TG ' + tid)) + '</button>';
 }
 function badge(status) { return '<span class="badge b-' + status + '">' + statusLabel(status) + '</span>'; }
 function cardStart(title, status) { return '<div class="card"><div class="card-header"><span class="card-title">' + title + '</span>' + (status ? badge(status) : '') + '</div>'; }
@@ -971,7 +974,7 @@ function renderDrivers() {
         for (var j = 0; j < directions.length; j++) { if (directions[j].id === d.direction_id) { dir = directions[j]; break; } }
         var dirName = dir ? (dir.from_label + ' → ' + dir.to_label) : '—';
         html += cardStart(d.full_name || 'Без имени (ID:' + d.id + ')', d.status);
-        html += row('TG ID', tgLink(d.telegram_id, 'TG ' + d.telegram_id));
+        html += row('TG ID', tgLink(d.telegram_id, d.username, 'TG ' + d.telegram_id));
         html += row('Направление', dirName);
         html += row('Макс. мест', d.max_seats);
         html += row('Долг', d.balance + ' ₽');
@@ -1732,7 +1735,7 @@ function showUserDetail(telegramId, skipRerender) {
         }
       }
       html += '<div class="actions">';
-      html += tgLink(u.telegram_id, 'Написать в Telegram');
+      html += tgLink(u.telegram_id, u.username, 'Написать в Telegram');
       if (u.is_blocked) {
         html += '<button type="button" class="btn btn-outline" onclick="unblockUser(' + u.telegram_id + ')">Разблокировать</button>';
       } else {

@@ -20,3 +20,8 @@ def test_parse_display_datetime_flexible_digits():
 def test_parse_display_datetime_dot_time_separator():
     parsed = parse_datetime_display("25.05.2026 08.30")
     assert parsed == datetime(2026, 5, 25, 8, 30, tzinfo=timezone.utc)
+
+
+def test_parse_display_datetime_flexible_separators():
+    parsed = parse_datetime_display("29-05-2026 08,00")
+    assert parsed == datetime(2026, 5, 29, 8, 0, tzinfo=timezone.utc)

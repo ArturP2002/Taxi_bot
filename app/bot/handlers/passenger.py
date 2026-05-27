@@ -72,6 +72,20 @@ _PASSENGER_STEP_META = {
 }
 
 
+def _normalized_display_for_field(field: str, value) -> str:
+    if field == "requested_departure_at" and value:
+        try:
+            dep = datetime.fromisoformat(str(value))
+            if dep.tzinfo is None:
+                dep = dep.replace(tzinfo=timezone.utc)
+            from app.util.time_format import format_datetime_display
+
+            return format_datetime_display(dep)
+        except Exception:
+            return str(value)
+    return str(value)
+
+
 async def _enter_passenger_step_confirmation(
     message: Message,
     state: FSMContext,
@@ -83,8 +97,9 @@ async def _enter_passenger_step_confirmation(
     await state.update_data(pending_field=field, pending_value=value)
     await state.set_state(PassengerOrder.confirm_step)
     label = _PASSENGER_STEP_META[field]["label"]
+    shown = _normalized_display_for_field(field, value) if field == "requested_departure_at" else display
     await message.answer(
-        f"Подтвердите {label}: {display}",
+        f"Подтвердите {label}: {shown}",
         reply_markup=keyboards.confirm_edit_kb(),
     )
 
@@ -252,12 +267,15 @@ async def requested_departure_enter(message: Message, state: FSMContext) -> None
         return
     await state.update_data(scheduled_trip_id=None)
     from app.util.time_format import format_datetime_display
+
+    accepted = format_datetime_display(dep)
+    await message.answer(f"Принято: {accepted}")
     await _enter_passenger_step_confirmation(
         message,
         state,
         field="requested_departure_at",
         value=dep.isoformat(),
-        display=format_datetime_display(dep),
+        display=accepted,
     )
 
 
@@ -791,6 +809,9 @@ async def passenger_submit_edit_value(message: Message, state: FSMContext) -> No
         except ValueError:
             await message.answer("Неверный формат даты/времени.")
             return
+        from app.util.time_format import format_datetime_display
+
+        await message.answer(f"Принято: {format_datetime_display(dep)}")
         value = dep.isoformat()
     else:
         value = value_raw
