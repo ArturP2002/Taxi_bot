@@ -14,6 +14,12 @@ class PassengerOrder(StatesGroup):
     to_location = State()
     seats = State()
     phone = State()
+    confirm = State()
+
+
+class PassengerCabinet(StatesGroup):
+    picking_field = State()
+    entering_value = State()
 
 
 class DriverRegister(StatesGroup):
@@ -32,6 +38,7 @@ class DriverRegister(StatesGroup):
     max_seats = State()
     price_per_seat = State()
     fixed_price = State()
+    confirm = State()
 
 
 class ProposeDirection(StatesGroup):

@@ -80,3 +80,27 @@ def test_fulfill_wrong_status():
     )
     with pytest.raises(ValueError, match="order_not_awaiting_trip"):
         trs.fulfill_order_with_trip(order.id, trip)
+
+
+def test_find_best_trip_for_request_prefers_closest_with_capacity():
+    d = _direction()
+    base = datetime.now(timezone.utc) + timedelta(days=3)
+    too_small = sts.create_trip(direction_id=d.id, departure_at=base, seats_total=1)
+    sts.book_seats(too_small.id, 1)
+    good = sts.create_trip(
+        direction_id=d.id,
+        departure_at=base + timedelta(minutes=15),
+        seats_total=4,
+    )
+    sts.create_trip(
+        direction_id=d.id,
+        departure_at=base + timedelta(hours=5),
+        seats_total=4,
+    )
+    best = trs.find_best_trip_for_request(
+        direction_id=d.id,
+        requested_departure_at=base + timedelta(minutes=10),
+        seats=2,
+    )
+    assert best is not None
+    assert best.id == good.id

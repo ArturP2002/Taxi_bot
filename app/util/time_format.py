@@ -8,8 +8,11 @@ from typing import Optional, Union
 DATETIME_DISPLAY_FMT = "%d.%m.%Y %H:%M"
 DATETIME_DISPLAY_HINT = "ДД.ММ.ГГГГ ЧЧ:ММ (например 25.05.2026 08:00)"
 
-_DISPLAY_RE = re.compile(
+_DISPLAY_RE_COLON = re.compile(
     r"^(\d{1,2})\.(\d{1,2})\.(\d{4})\s+(\d{1,2}):(\d{2})$"
+)
+_DISPLAY_RE_DOT = re.compile(
+    r"^(\d{1,2})\.(\d{1,2})\.(\d{4})\s+(\d{1,2})\.(\d{2})$"
 )
 
 
@@ -30,11 +33,11 @@ def format_datetime_display(dt: Optional[Union[datetime, str]]) -> str:
 
 
 def parse_datetime_display(text: str) -> datetime:
-    """Parse ДД.ММ.ГГГГ ЧЧ:ММ (или ISO) → UTC datetime."""
+    """Parse ДД.ММ.ГГГГ ЧЧ:ММ / ДД.ММ.ГГГГ ЧЧ.ММ (or ISO) to UTC datetime."""
     raw = (text or "").strip()
     if not raw:
         raise ValueError(DATETIME_DISPLAY_HINT)
-    m = _DISPLAY_RE.match(raw)
+    m = _DISPLAY_RE_COLON.match(raw) or _DISPLAY_RE_DOT.match(raw)
     if m:
         day, month, year, hour, minute = (int(x) for x in m.groups())
         return datetime(year, month, day, hour, minute, tzinfo=timezone.utc)

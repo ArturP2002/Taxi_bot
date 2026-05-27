@@ -173,7 +173,8 @@ var API_ERRORS = {
   no_suggestion: 'Нет предложения системы. Обновите список.',
   direction_required: 'Выберите направление при подтверждении водителя.',
   order_not_splittable: 'Разделить можно только новый заказ или на проверке.',
-  invalid_split_seats: 'Укажите число мест меньше текущего (минимум 1).'
+  invalid_split_seats: 'Укажите число мест меньше текущего (минимум 1).',
+  request_not_pending: 'Запрос уже обработан.'
 };
 
 function authErrorLabel(detail) {
@@ -562,9 +563,20 @@ function queueDriverStatus(q) {
 
 function h(tag, cls, inner) { return '<' + tag + (cls ? ' class="' + cls + '"' : '') + '>' + (inner || '') + '</' + tag + '>'; }
 function row(label, value) { return '<div class="row"><span class="lbl">' + label + '</span><span class="val">' + value + '</span></div>'; }
+function openTelegramUserById(tid) {
+  if (!tid) return;
+  var webUrl = 'https://t.me/' + tid;
+  try {
+    if (tg && typeof tg.openTelegramLink === 'function') {
+      tg.openTelegramLink(webUrl);
+      return;
+    }
+  } catch (e) {}
+  window.location.href = 'tg://user?id=' + tid;
+}
 function tgLink(tid, label) {
   if (!tid) return esc(label || '—');
-  return '<a href="tg://user?id=' + tid + '" style="color:var(--info)">' + esc(label || ('TG ' + tid)) + '</a>';
+  return '<button type="button" class="btn btn-outline" style="padding:4px 10px;font-size:11px" onclick="openTelegramUserById(' + tid + ')">' + esc(label || ('TG ' + tid)) + '</button>';
 }
 function badge(status) { return '<span class="badge b-' + status + '">' + statusLabel(status) + '</span>'; }
 function cardStart(title, status) { return '<div class="card"><div class="card-header"><span class="card-title">' + title + '</span>' + (status ? badge(status) : '') + '</div>'; }
@@ -622,11 +634,23 @@ function renderDashboard() {
 
 // Orders
 function renderOrders() {
-  api('/api/admin/orders').then(function(data) {
-    var orders = ensureArray(data);
+  Promise.all([api('/api/admin/orders'), api('/api/admin/order-change-requests?status=pending')]).then(function(results) {
+    var orders = ensureArray(results[0]);
+    var changeRequests = ensureArray(results[1]);
     cache.orders = orders;
     if (orders.length === 0) { content.innerHTML = '<div class="empty">Заказов пока нет</div>'; return; }
     var html = '';
+    if (changeRequests.length) {
+      html += '<div class="card"><div class="card-title" style="color:var(--danger)">Запросы на изменения (' + changeRequests.length + ')</div>';
+      for (var cr = 0; cr < changeRequests.length; cr++) {
+        var req = changeRequests[cr];
+        html += row('Заказ', '#' + req.order_id + ' · TG ' + req.passenger_telegram_id);
+        html += row('Поля', esc(JSON.stringify(req.requested_payload || {})));
+        html += '<div class="actions"><button class="btn btn-success" onclick="approveOrderChange(' + req.id + ')">✅ Принять</button>';
+        html += '<button class="btn btn-danger" onclick="rejectOrderChange(' + req.id + ')">❌ Отклонить</button></div>';
+      }
+      html += '</div>';
+    }
     for (var i = 0; i < orders.length; i++) {
       var o = orders[i];
       html += cardStart('Заказ #' + o.id, o.status);
@@ -681,6 +705,23 @@ function renderOrders() {
     }
     content.innerHTML = html;
   }).catch(function(e) { content.innerHTML = '<div class="empty">Ошибка: ' + e.message + '</div>'; });
+}
+
+function approveOrderChange(requestId) {
+  api('/api/admin/order-change-requests/' + requestId + '/approve', {
+    method: 'POST',
+    body: JSON.stringify({})
+  }).then(function() { toast('Изменение подтверждено'); renderOrders(); })
+    .catch(function(e) { toast('Ошибка: ' + e.message); });
+}
+
+function rejectOrderChange(requestId) {
+  var note = prompt('Причина отклонения (опционально):') || '';
+  api('/api/admin/order-change-requests/' + requestId + '/reject', {
+    method: 'POST',
+    body: JSON.stringify({ admin_comment: note || null })
+  }).then(function() { toast('Изменение отклонено'); renderOrders(); })
+    .catch(function(e) { toast('Ошибка: ' + e.message); });
 }
 
 
@@ -1518,7 +1559,7 @@ function renderCalendar() {
       cache.scheduledTrips = trips;
       var html = '';
       if (requests.length) {
-        html += '<div class="card"><div class="card-title">Заявки на рейс (' + requests.length + ')</div>';
+        html += '<div class="card" style="border:1px solid var(--danger)"><div class="card-title" style="color:var(--danger)">Заявки на рейс (' + requests.length + ')</div>';
         for (var ri = 0; ri < requests.length; ri++) {
           var req = requests[ri];
           html += '<div style="margin-bottom:12px;padding-bottom:12px;border-bottom:1px solid var(--border)">';

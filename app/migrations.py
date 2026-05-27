@@ -139,6 +139,32 @@ MIGRATIONS: list[tuple[str, list[str]]] = [
             "ALTER TABLE users ADD COLUMN last_seen_at TEXT",
         ],
     ),
+    (
+        "20260527_v10_order_change_requests",
+        [
+            """CREATE TABLE IF NOT EXISTS order_change_requests (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                order_id INTEGER NOT NULL,
+                passenger_id INTEGER NOT NULL,
+                status VARCHAR(32) NOT NULL DEFAULT 'pending',
+                requested_payload TEXT NOT NULL,
+                admin_comment TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT,
+                FOREIGN KEY (order_id) REFERENCES orders(id) ON DELETE CASCADE,
+                FOREIGN KEY (passenger_id) REFERENCES users(id) ON DELETE CASCADE
+            )""",
+            "CREATE INDEX IF NOT EXISTS order_change_requests_status_idx ON order_change_requests(status, created_at)",
+        ],
+    ),
+    (
+        "20260527_v11_passenger_reminders",
+        [
+            "ALTER TABLE orders ADD COLUMN reminder_24h_sent_at TEXT",
+            "ALTER TABLE orders ADD COLUMN reminder_2h_sent_at TEXT",
+            "ALTER TABLE orders ADD COLUMN reminder_30m_sent_at TEXT",
+        ],
+    ),
 ]
 
 

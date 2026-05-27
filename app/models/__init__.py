@@ -27,6 +27,10 @@ from app.models.scheduled_trip import (
     ScheduledTripStatus,
     ScheduledTripCreatedBy,
 )
+from app.models.order_change_request import (
+    OrderChangeRequest,
+    OrderChangeRequestStatus,
+)
 
 ALL_MODELS = [
     User,
@@ -46,6 +50,7 @@ ALL_MODELS = [
     AuditLog,
     DriverEvent,
     ScheduledTrip,
+    OrderChangeRequest,
 ]
 
 __all__ = [
@@ -80,4 +85,6 @@ __all__ = [
     "ScheduledTrip",
     "ScheduledTripStatus",
     "ScheduledTripCreatedBy",
+    "OrderChangeRequest",
+    "OrderChangeRequestStatus",
 ]

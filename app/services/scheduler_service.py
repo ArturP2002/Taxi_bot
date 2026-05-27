@@ -8,7 +8,7 @@ from datetime import datetime, timezone
 from aiogram import Bot
 
 from app.config import get_settings
-from app.models import DriverProfile, QueueEntry
+from app.models import DriverProfile, QueueEntry, Order, OrderStatus
 from app.services import queue_eta_service
 from app.services.admin_notify import notify_queue_underfill
 from app.services.loading_service import direction_waiting_pool
@@ -107,3 +107,72 @@ async def check_underfill_on_direction(bot: Bot, direction_id: int) -> None:
         order_count=pool["order_count"],
         total_seats=pool["total_seats"],
     )
+
+
+async def passenger_trip_reminder_loop(bot: Bot, stop_event: asyncio.Event) -> None:
+    while not stop_event.is_set():
+        try:
+            await _run_passenger_trip_reminders(bot)
+        except Exception:
+            logger.exception("passenger reminders tick failed")
+        try:
+            await asyncio.wait_for(stop_event.wait(), timeout=300)
+        except asyncio.TimeoutError:
+            pass
+
+
+async def _run_passenger_trip_reminders(bot: Bot) -> None:
+    now = datetime.now(timezone.utc)
+    rows = (
+        Order.select()
+        .where(
+            (Order.scheduled_trip_id.is_null(False))
+            & (Order.status.in_([
+                OrderStatus.NEW.value,
+                OrderStatus.ASSIGNED.value,
+                OrderStatus.IN_PROGRESS.value,
+                OrderStatus.AWAITING_PAYMENT.value,
+            ]))
+        )
+        .limit(500)
+    )
+    from app.models.scheduled_trip import ScheduledTrip
+    from app.models.direction import Direction
+
+    for o in rows:
+        try:
+            trip = ScheduledTrip.get_by_id(o.scheduled_trip_id)
+        except Exception:
+            continue
+        dep = trip.departure_at
+        if dep.tzinfo is None:
+            dep = dep.replace(tzinfo=timezone.utc)
+        mins = int((dep - now).total_seconds() // 60)
+        if mins < 0:
+            continue
+        if 1410 <= mins <= 1440 and not getattr(o, "reminder_24h_sent_at", None):
+            await _send_trip_reminder(bot, o, dep, Direction.get_by_id(o.direction_id), "24 часа")
+            Order.update(reminder_24h_sent_at=now).where(Order.id == o.id).execute()
+            continue
+        if 110 <= mins <= 120 and not getattr(o, "reminder_2h_sent_at", None):
+            await _send_trip_reminder(bot, o, dep, Direction.get_by_id(o.direction_id), "2 часа")
+            Order.update(reminder_2h_sent_at=now).where(Order.id == o.id).execute()
+            continue
+        if 25 <= mins <= 30 and not getattr(o, "reminder_30m_sent_at", None):
+            await _send_trip_reminder(bot, o, dep, Direction.get_by_id(o.direction_id), "30 минут")
+            Order.update(reminder_30m_sent_at=now).where(Order.id == o.id).execute()
+
+
+async def _send_trip_reminder(bot: Bot, order: Order, dep: datetime, direction: Direction, left_label: str) -> None:
+    from app.util.time_format import format_datetime_display
+
+    text = (
+        f"⏰ Напоминание о поездке #{order.id}\n"
+        f"Маршрут: {direction.from_label} → {direction.to_label}\n"
+        f"Выезд: {format_datetime_display(dep)}\n"
+        f"До поездки примерно {left_label}."
+    )
+    try:
+        await bot.send_message(order.passenger.telegram_id, text)
+    except Exception as e:
+        logger.warning("passenger reminder order=%s: %s", order.id, e)

@@ -42,7 +42,7 @@ async def lifespan(app: FastAPI):
     app.state.dp = dp
     stop_scheduler = asyncio.Event()
     app.state.scheduler_stop = stop_scheduler
-    scheduler_task = None
+    scheduler_tasks: list[asyncio.Task] = []
 
     if bot:
         try:
@@ -79,19 +79,22 @@ async def lifespan(app: FastAPI):
 
         from app.services.scheduler_service import (
             loading_reminder_loop,
+            passenger_trip_reminder_loop,
             scheduled_orders_activation_loop,
         )
 
-        scheduler_task = asyncio.create_task(loading_reminder_loop(bot, stop_scheduler))
-        asyncio.create_task(scheduled_orders_activation_loop(bot, stop_scheduler))
+        scheduler_tasks.append(asyncio.create_task(loading_reminder_loop(bot, stop_scheduler)))
+        scheduler_tasks.append(asyncio.create_task(scheduled_orders_activation_loop(bot, stop_scheduler)))
+        scheduler_tasks.append(asyncio.create_task(passenger_trip_reminder_loop(bot, stop_scheduler)))
 
     yield
 
     stop_scheduler.set()
-    if scheduler_task:
-        scheduler_task.cancel()
+    for task in scheduler_tasks:
+        task.cancel()
+    for task in scheduler_tasks:
         try:
-            await scheduler_task
+            await task
         except asyncio.CancelledError:
             pass
 

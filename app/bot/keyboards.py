@@ -13,6 +13,8 @@ from app.config import get_settings
 BTN_ORDER_RIDE = "🚕 Заказать поездку"
 BTN_DRIVER_MODE = "🧑‍✈️ Я водитель"
 BTN_PASSENGER_MODE = "👤 Режим пассажира"
+BTN_PASSENGER_CABINET = "👤 Личный кабинет"
+BTN_BACK = "⬅️ Назад"
 BTN_CANCEL = "❌ Отмена"
 
 SEATS_OWN_MIN = 0
@@ -42,6 +44,7 @@ DRIVER_MENU_TEXTS: frozenset[str] = frozenset({
     "📅 Мои рейсы",
     "➕ Объявить рейс",
     BTN_PASSENGER_MODE,
+    BTN_BACK,
     "▶️ Старт поездки",
     "📲 Посадка (код/QR)",
     "🚗 Выехать",
@@ -60,7 +63,7 @@ DRIVER_MENU_TEXTS: frozenset[str] = frozenset({
 def main_passenger_kb() -> ReplyKeyboardMarkup:
     b = ReplyKeyboardBuilder()
     b.button(text=BTN_ORDER_RIDE)
-    b.button(text=BTN_BOARDING_CODE)
+    b.button(text=BTN_PASSENGER_CABINET)
     b.button(text="📞 Связь с водителем")
     b.button(text="📞 Связь с админом")
     b.button(text=BTN_DRIVER_MODE)
@@ -101,6 +104,23 @@ def seats_kb() -> ReplyKeyboardMarkup:
 def cancel_kb() -> ReplyKeyboardMarkup:
     b = ReplyKeyboardBuilder()
     b.button(text=BTN_CANCEL)
+    return b.as_markup(resize_keyboard=True)
+
+
+def cancel_back_kb() -> ReplyKeyboardMarkup:
+    b = ReplyKeyboardBuilder()
+    b.button(text=BTN_BACK)
+    b.button(text=BTN_CANCEL)
+    b.adjust(2)
+    return b.as_markup(resize_keyboard=True)
+
+
+def confirm_edit_kb() -> ReplyKeyboardMarkup:
+    b = ReplyKeyboardBuilder()
+    b.button(text="✅ Подтвердить")
+    b.button(text=BTN_BACK)
+    b.button(text=BTN_CANCEL)
+    b.adjust(1)
     return b.as_markup(resize_keyboard=True)
 
 
@@ -256,7 +276,7 @@ def trip_calendar_kb(
     available_dates: Set[date],
     direction_id: int,
 ) -> InlineKeyboardMarkup:
-    """Dates with open trips + month navigation (each control on its own row)."""
+    """Passenger trip mode picker (ASAP vs custom date-time)."""
     rows: list[list[InlineKeyboardButton]] = []
     rows.append([
         InlineKeyboardButton(
@@ -269,38 +289,6 @@ def trip_calendar_kb(
             text="📝 Указать свою дату и время",
             callback_data=f"tcal:custom:{direction_id}",
         )
-    ])
-    month_dates = sorted(d for d in available_dates if d.year == year and d.month == month)
-    if month_dates:
-        for d in month_dates:
-            rows.append([
-                InlineKeyboardButton(
-                    text=f"📅 {d.strftime('%d.%m.%Y')}",
-                    callback_data=f"tcal:day:{direction_id}:{d.isoformat()}",
-                )
-            ])
-    else:
-        rows.append([
-            InlineKeyboardButton(
-                text="Нет рейсов в этом месяце",
-                callback_data="tcal:noop",
-            )
-        ])
-    prev_m, prev_y = (month - 1, year) if month > 1 else (12, year - 1)
-    next_m, next_y = (month + 1, year) if month < 12 else (1, year + 1)
-    rows.append([
-        InlineKeyboardButton(
-            text="◀",
-            callback_data=f"tcal:nav:{direction_id}:{prev_y}-{prev_m:02d}",
-        ),
-        InlineKeyboardButton(
-            text=f"{month:02d}.{year}",
-            callback_data="tcal:noop",
-        ),
-        InlineKeyboardButton(
-            text="▶",
-            callback_data=f"tcal:nav:{direction_id}:{next_y}-{next_m:02d}",
-        ),
     ])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 

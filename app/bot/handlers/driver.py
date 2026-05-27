@@ -1653,7 +1653,39 @@ async def reg_fixed(message: Message, state: FSMContext, bot: Bot) -> None:
     dprof.proposed_fixed_price = fixed
     dprof.status = DriverStatus.PENDING.value
     dprof.save()
+    route_from = data.get("route_from", "—")
+    route_to = data.get("route_to", "—")
+    await state.update_data(fixed_price=str(fixed))
+    await state.set_state(DriverRegister.confirm)
+    await message.answer(
+        "Проверьте анкету:\n"
+        f"Маршрут: {route_from} → {route_to}\n"
+        f"ФИО: {data.get('full_name', '—')}\n"
+        f"Авто: {data.get('car_info', '—')}\n"
+        f"Телефон: {data.get('phone', '—')}\n"
+        f"Мест: {data.get('max_seats', '—')}\n"
+        f"Тариф: {data.get('price_per_seat', '0')} + {fixed}",
+        reply_markup=keyboards.confirm_edit_kb(),
+    )
 
+
+@router.message(DriverRegister.confirm, F.text, _NOT_MENU_TEXT)
+async def reg_confirm(message: Message, state: FSMContext, bot: Bot) -> None:
+    if message.text == keyboards.BTN_CANCEL:
+        await state.clear()
+        await message.answer("Отменено.", reply_markup=keyboards.main_driver_kb())
+        return
+    if message.text == keyboards.BTN_BACK:
+        await state.set_state(DriverRegister.fixed_price)
+        await message.answer("Вернулись на шаг фиксированной доплаты. Введите значение:", reply_markup=keyboards.cancel_kb())
+        return
+    if message.text != "✅ Подтвердить":
+        await message.answer("Нажмите «✅ Подтвердить», «⬅️ Назад» или «❌ Отмена».")
+        return
+
+    data = await state.get_data()
+    ensure_user(message.from_user, prefer_driver=True)
+    dprof = DriverProfile.get(user=User.get(telegram_id=message.from_user.id))
     ok, result = await reg_service.finalize_driver_registration(
         bot,
         dprof=dprof,

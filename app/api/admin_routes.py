@@ -20,6 +20,8 @@ from app.models import (
     PaymentRecord,
     PaymentStatus,
     User,
+    OrderChangeRequest,
+    OrderChangeRequestStatus,
 )
 from app.config import get_settings
 from app.services import order_service, queue_service, proposed_service, audit_service
@@ -203,6 +205,48 @@ class OrderPatchIn(BaseModel):
     pickup_surcharge: Optional[Decimal] = None
 
 
+class OrderChangeRequestOut(BaseModel):
+    id: int
+    order_id: int
+    passenger_telegram_id: int
+    status: str
+    requested_payload: dict
+    admin_comment: Optional[str] = None
+    created_at: str
+
+
+class OrderChangeDecisionIn(BaseModel):
+    admin_comment: Optional[str] = None
+
+
+def _order_change_out(row: OrderChangeRequest) -> OrderChangeRequestOut:
+    pu = User.get_by_id(row.passenger_id)
+    import json
+
+    payload = {}
+    try:
+        payload = json.loads(row.requested_payload or "{}")
+    except Exception:
+        payload = {}
+    return OrderChangeRequestOut(
+        id=row.id,
+        order_id=row.order_id,
+        passenger_telegram_id=pu.telegram_id,
+        status=row.status,
+        requested_payload=payload,
+        admin_comment=row.admin_comment,
+        created_at=str(row.created_at),
+    )
+
+
+@router.get("/order-change-requests", response_model=List[OrderChangeRequestOut])
+def list_order_change_requests(status: str = "pending") -> Any:
+    q = OrderChangeRequest.select().order_by(OrderChangeRequest.id.desc())
+    if status:
+        q = q.where(OrderChangeRequest.status == status)
+    return [_order_change_out(r) for r in q.limit(200)]
+
+
 @router.patch("/orders/{order_id}")
 async def patch_order(
     order_id: int,
@@ -226,6 +270,116 @@ async def patch_order(
             await broadcast_loading_update(bot, o.direction_id, trigger_order_id=o.id)
         except Exception:
             pass
+    return {"ok": True}
+
+
+def _apply_order_change_payload(order: Order, payload: dict) -> None:
+    updates: dict[str, Any] = {}
+    allowed = {
+        "from_location",
+        "to_location",
+        "seats",
+        "phone",
+        "requested_departure_at",
+        "pickup_location",
+        "pickup_time_text",
+    }
+    for k, v in payload.items():
+        if k in allowed:
+            updates[k] = v
+    if "requested_departure_at" in updates and updates["requested_departure_at"]:
+        from app.util.time_format import parse_datetime_display
+
+        val = str(updates["requested_departure_at"])
+        if "T" in val:
+            dep = datetime.fromisoformat(val.replace("Z", "+00:00"))
+            if dep.tzinfo is None:
+                dep = dep.replace(tzinfo=timezone.utc)
+        else:
+            dep = parse_datetime_display(val)
+        updates["requested_departure_at"] = dep
+        updates["scheduled_trip_id"] = None
+        updates["scheduled_activated"] = False
+        updates["status"] = OrderStatus.AWAITING_SCHEDULED_TRIP.value
+    if updates:
+        updates["updated_at"] = datetime.now(timezone.utc)
+        Order.update(**updates).where(Order.id == order.id).execute()
+
+
+@router.post("/order-change-requests/{request_id}/approve")
+async def approve_order_change_request(
+    request_id: int,
+    body: OrderChangeDecisionIn,
+    request: Request,
+    user: User = Depends(require_admin),
+) -> Any:
+    import json
+
+    row = OrderChangeRequest.get_by_id(request_id)
+    if row.status != OrderChangeRequestStatus.PENDING.value:
+        raise HTTPException(400, "request_not_pending")
+    order = Order.get_by_id(row.order_id)
+    try:
+        payload = json.loads(row.requested_payload or "{}")
+    except Exception:
+        payload = {}
+    _apply_order_change_payload(order, payload)
+    OrderChangeRequest.update(
+        status=OrderChangeRequestStatus.APPROVED.value,
+        admin_comment=body.admin_comment,
+        updated_at=datetime.now(timezone.utc),
+    ).where(OrderChangeRequest.id == row.id).execute()
+    audit_service.log_action(
+        "order_change_request_approved",
+        actor_telegram_id=user.telegram_id,
+        entity_type="order_change_request",
+        entity_id=str(row.id),
+        payload={"order_id": row.order_id},
+    )
+    bot = _bot(request)
+    passenger = User.get_by_id(row.passenger_id)
+    try:
+        await bot.send_message(
+            passenger.telegram_id,
+            f"✅ Администратор подтвердил изменения по заказу #{row.order_id}.",
+        )
+    except Exception:
+        pass
+    return {"ok": True}
+
+
+@router.post("/order-change-requests/{request_id}/reject")
+async def reject_order_change_request(
+    request_id: int,
+    body: OrderChangeDecisionIn,
+    request: Request,
+    user: User = Depends(require_admin),
+) -> Any:
+    row = OrderChangeRequest.get_by_id(request_id)
+    if row.status != OrderChangeRequestStatus.PENDING.value:
+        raise HTTPException(400, "request_not_pending")
+    OrderChangeRequest.update(
+        status=OrderChangeRequestStatus.REJECTED.value,
+        admin_comment=body.admin_comment,
+        updated_at=datetime.now(timezone.utc),
+    ).where(OrderChangeRequest.id == row.id).execute()
+    audit_service.log_action(
+        "order_change_request_rejected",
+        actor_telegram_id=user.telegram_id,
+        entity_type="order_change_request",
+        entity_id=str(row.id),
+        payload={"order_id": row.order_id},
+    )
+    bot = _bot(request)
+    passenger = User.get_by_id(row.passenger_id)
+    note = f"\nПричина: {body.admin_comment}" if body.admin_comment else ""
+    try:
+        await bot.send_message(
+            passenger.telegram_id,
+            f"❌ Администратор отклонил изменения по заказу #{row.order_id}.{note}",
+        )
+    except Exception:
+        pass
     return {"ok": True}
 
 
@@ -379,10 +533,18 @@ async def cancel_order_endpoint(
 
     o = Order.get_by_id(order_id)
     linked = order_service.cancel_order(o, actor_telegram_id=user.telegram_id)
+    bot = _bot(request)
+    try:
+        await bot.send_message(
+            o.passenger.telegram_id,
+            f"❌ Заявка #{o.id} отклонена администратором. "
+            "Вы можете оформить новую заявку или связаться с администратором.",
+        )
+    except Exception:
+        pass
     if linked:
         d = DriverProfile.get_by_id(linked)
         if d.status == DriverStatus.SUSPICIOUS.value:
-            bot = _bot(request)
             stats = driver_risk_service.driver_risk_stats(d.id)
             await notify_driver_suspicious(
                 bot, d.full_name or f"ID:{d.id}", d.id, stats

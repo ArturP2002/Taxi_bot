@@ -39,6 +39,34 @@ def _target_order_status(direction: Direction) -> str:
     return OrderStatus.NEW.value
 
 
+def find_best_trip_for_request(
+    *,
+    direction_id: int,
+    requested_departure_at: datetime,
+    seats: int,
+) -> Optional[ScheduledTrip]:
+    """Find nearest open trip with enough seats for requested datetime."""
+    req = requested_departure_at
+    if req.tzinfo is None:
+        req = req.replace(tzinfo=timezone.utc)
+    candidates = scheduled_trip_service.list_open_by_direction(direction_id)
+    if not candidates:
+        return None
+    best: Optional[ScheduledTrip] = None
+    best_delta: Optional[float] = None
+    for trip in candidates:
+        if scheduled_trip_service.seats_available(trip) < int(seats):
+            continue
+        dep = trip.departure_at
+        if dep.tzinfo is None:
+            dep = dep.replace(tzinfo=timezone.utc)
+        delta = abs((dep - req).total_seconds())
+        if best is None or best_delta is None or delta < best_delta:
+            best = trip
+            best_delta = delta
+    return best
+
+
 def fulfill_order_with_trip(order_id: int, trip: ScheduledTrip) -> Order:
     """Link awaiting order to trip, book seats, set status for dispatch."""
     order = Order.get_by_id(order_id)

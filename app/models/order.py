@@ -73,6 +73,9 @@ class Order(BaseModel):
     )
     scheduled_activated = BooleanField(default=False)
     requested_departure_at = DateTimeField(null=True)
+    reminder_24h_sent_at = DateTimeField(null=True)
+    reminder_2h_sent_at = DateTimeField(null=True)
+    reminder_30m_sent_at = DateTimeField(null=True)
     created_at = DateTimeField(default=utcnow)
     updated_at = DateTimeField(null=True)
 
