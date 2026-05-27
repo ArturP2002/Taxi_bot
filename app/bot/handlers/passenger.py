@@ -342,7 +342,22 @@ async def passenger_confirm_step(message: Message, state: FSMContext) -> None:
     meta = _PASSENGER_STEP_META[field]
     if message.text == keyboards.BTN_BACK:
         await state.set_state(meta["prev_state"])
-        await message.answer("Введите значение заново:", reply_markup=keyboards.cancel_kb())
+        current_val = data.get("pending_value")
+        from app.util.time_format import format_datetime_display
+        if field == "requested_departure_at" and current_val:
+            try:
+                dep = datetime.fromisoformat(str(current_val))
+                if dep.tzinfo is None:
+                    dep = dep.replace(tzinfo=timezone.utc)
+                shown = format_datetime_display(dep)
+            except Exception:
+                shown = str(current_val)
+        else:
+            shown = str(current_val or "—")
+        await message.answer(
+            f"Введите значение заново.\nТекущее: {shown}",
+            reply_markup=keyboards.cancel_kb(),
+        )
         return
     if message.text != "✅ Подтвердить":
         await message.answer("Нажмите «✅ Подтвердить», «⬅️ Назад» или «❌ Отмена».")
@@ -388,8 +403,12 @@ async def passenger_confirm_submit(message: Message, state: FSMContext, bot: Bot
         await message.answer("Отменено.", reply_markup=keyboards.main_passenger_kb())
         return
     if message.text == keyboards.BTN_BACK:
+        data = await state.get_data()
         await state.set_state(PassengerOrder.phone)
-        await message.answer("Вернулись на шаг телефона. Введите номер ещё раз:", reply_markup=keyboards.cancel_kb())
+        await message.answer(
+            f"Вернулись на шаг телефона.\nТекущее: {data.get('phone', '—')}\nВведите номер ещё раз:",
+            reply_markup=keyboards.cancel_kb(),
+        )
         return
     if message.text != "✅ Подтвердить":
         await message.answer("Нажмите «✅ Подтвердить», «⬅️ Назад» или «❌ Отмена».")

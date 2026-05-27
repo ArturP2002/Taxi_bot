@@ -1713,7 +1713,7 @@ async def reg_fixed(message: Message, state: FSMContext) -> None:
     )
 
 
-@router.message(DriverRegister.confirm_step, F.text, _NOT_MENU_TEXT)
+@router.message(DriverRegister.confirm_step, F.text)
 async def reg_confirm_step(message: Message, state: FSMContext) -> None:
     if message.text == keyboards.BTN_CANCEL:
         await state.clear()
@@ -1728,7 +1728,11 @@ async def reg_confirm_step(message: Message, state: FSMContext) -> None:
     meta = _DRIVER_REG_STEP_META[field]
     if message.text == keyboards.BTN_BACK:
         await state.set_state(meta["prev_state"])
-        await message.answer("Введите значение заново:", reply_markup=keyboards.cancel_kb())
+        current_val = data.get("reg_pending_value")
+        await message.answer(
+            f"Введите значение заново.\nТекущее: {current_val if current_val not in (None, '') else '—'}",
+            reply_markup=keyboards.cancel_kb(),
+        )
         return
     if message.text != "✅ Подтвердить":
         await message.answer("Нажмите «✅ Подтвердить», «⬅️ Назад» или «❌ Отмена».")
@@ -1799,15 +1803,21 @@ async def reg_confirm_step(message: Message, state: FSMContext) -> None:
     await message.answer(meta["next_prompt"], reply_markup=next_markup)
 
 
-@router.message(DriverRegister.confirm, F.text, _NOT_MENU_TEXT)
+@router.message(DriverRegister.confirm, F.text)
 async def reg_confirm(message: Message, state: FSMContext, bot: Bot) -> None:
     if message.text == keyboards.BTN_CANCEL:
         await state.clear()
         await message.answer("Отменено.", reply_markup=keyboards.main_driver_kb())
         return
     if message.text == keyboards.BTN_BACK:
+        data = await state.get_data()
         await state.set_state(DriverRegister.fixed_price)
-        await message.answer("Вернулись на шаг фиксированной доплаты. Введите значение:", reply_markup=keyboards.cancel_kb())
+        await message.answer(
+            f"Вернулись на шаг фиксированной доплаты.\n"
+            f"Текущее: {data.get('fixed_price', '—')}\n"
+            "Введите значение:",
+            reply_markup=keyboards.cancel_kb(),
+        )
         return
     if message.text != "✅ Подтвердить":
         await message.answer("Нажмите «✅ Подтвердить», «⬅️ Назад» или «❌ Отмена».")
