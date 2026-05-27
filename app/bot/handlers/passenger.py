@@ -33,6 +33,61 @@ from app.services.boarding_credentials import (
 
 router = Router(name="passenger")
 
+_PASSENGER_STEP_META = {
+    "requested_departure_at": {
+        "label": "дату и время выезда",
+        "prev_state": PassengerOrder.requested_departure,
+        "next_state": PassengerOrder.from_location,
+        "next_prompt": "Точка отправления (текстом):",
+        "next_markup": "cancel",
+    },
+    "from_location": {
+        "label": "точку отправления",
+        "prev_state": PassengerOrder.from_location,
+        "next_state": PassengerOrder.to_location,
+        "next_prompt": "Точка назначения:",
+        "next_markup": "cancel",
+    },
+    "to_location": {
+        "label": "точку назначения",
+        "prev_state": PassengerOrder.to_location,
+        "next_state": PassengerOrder.seats,
+        "next_prompt": "Количество мест:",
+        "next_markup": "seats",
+    },
+    "seats": {
+        "label": "количество мест",
+        "prev_state": PassengerOrder.seats,
+        "next_state": PassengerOrder.phone,
+        "next_prompt": "Номер телефона:",
+        "next_markup": "cancel",
+    },
+    "phone": {
+        "label": "номер телефона",
+        "prev_state": PassengerOrder.phone,
+        "next_state": PassengerOrder.confirm,
+        "next_prompt": None,
+        "next_markup": None,
+    },
+}
+
+
+async def _enter_passenger_step_confirmation(
+    message: Message,
+    state: FSMContext,
+    *,
+    field: str,
+    value,
+    display: str,
+) -> None:
+    await state.update_data(pending_field=field, pending_value=value)
+    await state.set_state(PassengerOrder.confirm_step)
+    label = _PASSENGER_STEP_META[field]["label"]
+    await message.answer(
+        f"Подтвердите {label}: {display}",
+        reply_markup=keyboards.confirm_edit_kb(),
+    )
+
 
 async def _show_directions_page(message_or_cb, state: FSMContext, page: int = 0, mode: str = "browse") -> None:
     settings = get_settings()
@@ -195,17 +250,14 @@ async def requested_departure_enter(message: Message, state: FSMContext) -> None
             return
         await message.answer(f"Неверный формат. {DATETIME_DISPLAY_HINT}")
         return
-    await state.update_data(
-        requested_departure_at=dep.isoformat(),
-        scheduled_trip_id=None,
-    )
-    await state.set_state(PassengerOrder.from_location)
+    await state.update_data(scheduled_trip_id=None)
     from app.util.time_format import format_datetime_display
-
-    await message.answer(
-        f"Желаемый выезд: {format_datetime_display(dep)}\n"
-        "Точка отправления (текстом):",
-        reply_markup=keyboards.cancel_kb(),
+    await _enter_passenger_step_confirmation(
+        message,
+        state,
+        field="requested_departure_at",
+        value=dep.isoformat(),
+        display=format_datetime_display(dep),
     )
 
 
@@ -215,9 +267,14 @@ async def from_loc(message: Message, state: FSMContext) -> None:
         await state.clear()
         await message.answer("Отменено.", reply_markup=keyboards.main_passenger_kb())
         return
-    await state.update_data(from_location=message.text.strip())
-    await state.set_state(PassengerOrder.to_location)
-    await message.answer("Точка назначения:")
+    text = message.text.strip()
+    await _enter_passenger_step_confirmation(
+        message,
+        state,
+        field="from_location",
+        value=text,
+        display=text,
+    )
 
 
 @router.message(PassengerOrder.to_location, F.text)
@@ -226,9 +283,14 @@ async def to_loc(message: Message, state: FSMContext) -> None:
         await state.clear()
         await message.answer("Отменено.", reply_markup=keyboards.main_passenger_kb())
         return
-    await state.update_data(to_location=message.text.strip())
-    await state.set_state(PassengerOrder.seats)
-    await message.answer("Количество мест:", reply_markup=keyboards.seats_kb())
+    text = message.text.strip()
+    await _enter_passenger_step_confirmation(
+        message,
+        state,
+        field="to_location",
+        value=text,
+        display=text,
+    )
 
 
 @router.message(PassengerOrder.seats, F.text)
@@ -240,38 +302,83 @@ async def seats_pick(message: Message, state: FSMContext) -> None:
     if message.text not in {str(i) for i in range(keyboards.SEATS_ORDER_MIN, keyboards.SEATS_ORDER_MAX + 1)}:
         await message.answer(f"Выберите {keyboards.SEATS_ORDER_MIN}–{keyboards.SEATS_ORDER_MAX}.")
         return
-    await state.update_data(seats=int(message.text))
-    await state.set_state(PassengerOrder.phone)
-    await message.answer("Номер телефона:", reply_markup=keyboards.cancel_kb())
+    seats = int(message.text)
+    await _enter_passenger_step_confirmation(
+        message,
+        state,
+        field="seats",
+        value=seats,
+        display=str(seats),
+    )
 
 
 @router.message(PassengerOrder.phone, F.text)
-async def phone_enter(message: Message, state: FSMContext, bot: Bot) -> None:
+async def phone_enter(message: Message, state: FSMContext) -> None:
     if message.text == "❌ Отмена":
         await state.clear()
         await message.answer("Отменено.", reply_markup=keyboards.main_passenger_kb())
         return
-    data = await state.get_data()
-    await state.update_data(phone=message.text.strip())
-    direction = Direction.get_by_id(data["direction_id"])
-    from app.util.time_format import format_datetime_display
-
-    req_txt = ""
-    if data.get("requested_departure_at"):
-        dep = datetime.fromisoformat(data["requested_departure_at"])
-        if dep.tzinfo is None:
-            dep = dep.replace(tzinfo=timezone.utc)
-        req_txt = f"\nВыезд: {format_datetime_display(dep)}"
-    await state.set_state(PassengerOrder.confirm)
-    await message.answer(
-        "Проверьте заявку перед отправкой:\n"
-        f"Маршрут: {direction.from_label} → {direction.to_label}{req_txt}\n"
-        f"Откуда: {data['from_location']}\n"
-        f"Куда: {data['to_location']}\n"
-        f"Мест: {data['seats']}\n"
-        f"Телефон: {message.text.strip()}",
-        reply_markup=keyboards.confirm_edit_kb(),
+    await _enter_passenger_step_confirmation(
+        message,
+        state,
+        field="phone",
+        value=message.text.strip(),
+        display=message.text.strip(),
     )
+
+
+@router.message(PassengerOrder.confirm_step, F.text)
+async def passenger_confirm_step(message: Message, state: FSMContext) -> None:
+    if message.text == keyboards.BTN_CANCEL:
+        await state.clear()
+        await message.answer("Отменено.", reply_markup=keyboards.main_passenger_kb())
+        return
+    data = await state.get_data()
+    field = data.get("pending_field")
+    if field not in _PASSENGER_STEP_META:
+        await state.clear()
+        await message.answer("Сессия подтверждения устарела.", reply_markup=keyboards.main_passenger_kb())
+        return
+    meta = _PASSENGER_STEP_META[field]
+    if message.text == keyboards.BTN_BACK:
+        await state.set_state(meta["prev_state"])
+        await message.answer("Введите значение заново:", reply_markup=keyboards.cancel_kb())
+        return
+    if message.text != "✅ Подтвердить":
+        await message.answer("Нажмите «✅ Подтвердить», «⬅️ Назад» или «❌ Отмена».")
+        return
+
+    await state.update_data(**{field: data.get("pending_value")}, pending_field=None, pending_value=None)
+    if meta["next_state"] == PassengerOrder.confirm:
+        data = await state.get_data()
+        direction = Direction.get_by_id(data["direction_id"])
+        from app.util.time_format import format_datetime_display
+
+        req_txt = ""
+        if data.get("requested_departure_at"):
+            dep = datetime.fromisoformat(data["requested_departure_at"])
+            if dep.tzinfo is None:
+                dep = dep.replace(tzinfo=timezone.utc)
+            req_txt = f"\nВыезд: {format_datetime_display(dep)}"
+        await state.set_state(PassengerOrder.confirm)
+        await message.answer(
+            "Проверьте заявку перед отправкой:\n"
+            f"Маршрут: {direction.from_label} → {direction.to_label}{req_txt}\n"
+            f"Откуда: {data['from_location']}\n"
+            f"Куда: {data['to_location']}\n"
+            f"Мест: {data['seats']}\n"
+            f"Телефон: {data['phone']}",
+            reply_markup=keyboards.confirm_edit_kb(),
+        )
+        return
+
+    await state.set_state(meta["next_state"])
+    markup = None
+    if meta["next_markup"] == "cancel":
+        markup = keyboards.cancel_kb()
+    elif meta["next_markup"] == "seats":
+        markup = keyboards.seats_kb()
+    await message.answer(meta["next_prompt"], reply_markup=markup)
 
 
 @router.message(PassengerOrder.confirm, F.text)
