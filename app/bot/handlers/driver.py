@@ -1258,10 +1258,10 @@ async def driver_admin_chat(message: Message, state: FSMContext) -> None:
 @router.message(F.text == "📅 Мои рейсы")
 async def driver_my_trips(message: Message, state: FSMContext) -> None:
     await state.clear()
-    if await _start_registration_if_needed(message, state):
-        return
     ensure_user(message.from_user, prefer_driver=True)
     dprof = _driver(message)
+    if await _start_registration_if_needed(message, state, dprof):
+        return
     from app.services import scheduled_trip_service
 
     trips = scheduled_trip_service.list_driver_trips(dprof)
@@ -1282,14 +1282,14 @@ async def driver_my_trips(message: Message, state: FSMContext) -> None:
 @router.message(F.text == "➕ Объявить рейс")
 async def driver_create_trip_start(message: Message, state: FSMContext) -> None:
     await state.clear()
-    if await _start_registration_if_needed(message, state):
+    ensure_user(message.from_user, prefer_driver=True)
+    dprof = _driver(message)
+    if await _start_registration_if_needed(message, state, dprof):
         return
     settings = get_settings()
     if not settings.driver_can_create_trips:
         await message.answer("Создание рейсов доступно только через администратора.")
         return
-    ensure_user(message.from_user, prefer_driver=True)
-    dprof = _driver(message)
     if not dprof.direction_id:
         await message.answer("Сначала администратор должен назначить вам направление.")
         return
