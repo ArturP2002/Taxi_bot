@@ -23,7 +23,7 @@ from app.models import (
 )
 from app.services import code_service, order_service
 from app.services import direction_search
-from app.services.admin_notify import notify_new_order
+from app.services.admin_notify import notify_new_order, notify_order_change_request
 from app.services import passenger_payment_service
 from app.services import scheduled_trip_service
 from app.services.boarding_credentials import (
@@ -32,6 +32,16 @@ from app.services.boarding_credentials import (
 )
 
 router = Router(name="passenger")
+
+_CHANGE_FIELD_LABELS = {
+    "from_location": "Откуда",
+    "to_location": "Куда",
+    "seats": "Мест",
+    "phone": "Телефон",
+    "requested_departure_at": "Желаемый выезд",
+    "pickup_location": "Точка подачи",
+    "pickup_time_text": "Время подачи",
+}
 
 _PASSENGER_STEP_META = {
     "requested_departure_at": {
@@ -817,12 +827,31 @@ async def passenger_submit_edit_value(message: Message, state: FSMContext) -> No
         value = value_raw
     u = User.get(telegram_id=message.from_user.id)
     payload = json.dumps({field: value}, ensure_ascii=False)
-    OrderChangeRequest.create(
+    row = OrderChangeRequest.create(
         order_id=order_id,
         passenger_id=u.id,
         status=OrderChangeRequestStatus.PENDING.value,
         requested_payload=payload,
     )
+    change_label = _CHANGE_FIELD_LABELS.get(field, field)
+    change_value = str(value_raw)
+    if field == "requested_departure_at":
+        from app.util.time_format import format_datetime_display
+
+        change_value = format_datetime_display(dep)
+    passenger_label = (u.first_name or "") + (" " + u.last_name if u.last_name else "")
+    passenger_label = passenger_label.strip() or (f"@{u.username}" if u.username else "Пассажир")
+    try:
+        await notify_order_change_request(
+            message.bot,
+            request_id=row.id,
+            order_id=order_id,
+            passenger_label=passenger_label,
+            passenger_telegram_id=u.telegram_id,
+            change_lines=[f"{change_label}: {change_value}"],
+        )
+    except Exception:
+        pass
     await state.clear()
     await message.answer(
         f"✅ Запрос на изменение заказа #{order_id} отправлен администратору.",

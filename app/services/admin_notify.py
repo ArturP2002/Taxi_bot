@@ -323,6 +323,29 @@ async def notify_driver_transfer_request(
     await notify_admins(bot, text)
 
 
+async def notify_order_change_request(
+    bot: Bot,
+    *,
+    request_id: int,
+    order_id: int,
+    passenger_label: str,
+    passenger_telegram_id: int,
+    change_lines: list[str],
+) -> None:
+    lines = [
+        "✏️ Новый запрос на изменение заказа",
+        f"Заявка: #{request_id}",
+        f"Заказ: #{order_id}",
+        f"Пассажир: {passenger_label} · TG {passenger_telegram_id}",
+    ]
+    if change_lines:
+        lines.append("Изменения:")
+        lines.extend([f"• {line}" for line in change_lines])
+    lines.append("")
+    lines.append("Откройте админку → «Заказы» → «Запросы на изменения».")
+    await notify_admins(bot, "\n".join(lines))
+
+
 async def notify_debt_auto_blocked(bot: Bot, driver_name: str, balance, driver_id: int) -> None:
     text = (
         f"⛔ Водитель заблокирован по долгу\n"

@@ -563,6 +563,36 @@ function queueDriverStatus(q) {
 
 function h(tag, cls, inner) { return '<' + tag + (cls ? ' class="' + cls + '"' : '') + '>' + (inner || '') + '</' + tag + '>'; }
 function row(label, value) { return '<div class="row"><span class="lbl">' + label + '</span><span class="val">' + value + '</span></div>'; }
+function formatOrderChangePayload(payload, currentPayload) {
+  var p = payload || {};
+  var curr = currentPayload || {};
+  var labels = {
+    from_location: 'Откуда',
+    to_location: 'Куда',
+    seats: 'Мест',
+    phone: 'Телефон',
+    requested_departure_at: 'Желаемый выезд',
+    pickup_location: 'Точка подачи',
+    pickup_time_text: 'Время подачи'
+  };
+  var keys = Object.keys(p);
+  if (!keys.length) return '—';
+  var lines = [];
+  for (var i = 0; i < keys.length; i++) {
+    var key = keys[i];
+    var label = labels[key] || key;
+    var oldVal = curr[key];
+    var newVal = p[key];
+    if (key === 'requested_departure_at') {
+      if (typeof oldVal === 'string') oldVal = oldVal.replace('T', ' ').replace('Z', '');
+      if (typeof newVal === 'string') newVal = newVal.replace('T', ' ').replace('Z', '');
+    }
+    var oldTxt = (oldVal === null || oldVal === undefined || String(oldVal).trim() === '') ? '—' : String(oldVal);
+    var newTxt = (newVal === null || newVal === undefined || String(newVal).trim() === '') ? '—' : String(newVal);
+    lines.push(esc(label) + ': ' + esc(oldTxt) + ' → ' + esc(newTxt));
+  }
+  return lines.join('<br>');
+}
 function openTelegramChat(tid, username) {
   if (!tid && !username) return;
   var uname = username ? String(username).replace(/^@/, '').trim() : '';
@@ -648,7 +678,7 @@ function renderOrders() {
       for (var cr = 0; cr < changeRequests.length; cr++) {
         var req = changeRequests[cr];
         html += row('Заказ', '#' + req.order_id + ' · TG ' + req.passenger_telegram_id);
-        html += row('Поля', esc(JSON.stringify(req.requested_payload || {})));
+        html += row('Изменения', formatOrderChangePayload(req.requested_payload, req.current_payload));
         html += '<div class="actions"><button class="btn btn-success" onclick="approveOrderChange(' + req.id + ')">✅ Принять</button>';
         html += '<button class="btn btn-danger" onclick="rejectOrderChange(' + req.id + ')">❌ Отклонить</button></div>';
       }

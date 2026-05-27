@@ -211,6 +211,7 @@ class OrderChangeRequestOut(BaseModel):
     passenger_telegram_id: int
     status: str
     requested_payload: dict
+    current_payload: dict = {}
     admin_comment: Optional[str] = None
     created_at: str
 
@@ -228,12 +229,33 @@ def _order_change_out(row: OrderChangeRequest) -> OrderChangeRequestOut:
         payload = json.loads(row.requested_payload or "{}")
     except Exception:
         payload = {}
+    current_payload: dict[str, Any] = {}
+    try:
+        order = Order.get_by_id(row.order_id)
+        from app.util.time_format import format_datetime_display
+
+        current_payload = {
+            "from_location": order.from_location,
+            "to_location": order.to_location,
+            "seats": order.seats,
+            "phone": order.phone,
+            "requested_departure_at": (
+                format_datetime_display(order.requested_departure_at)
+                if order.requested_departure_at
+                else None
+            ),
+            "pickup_location": order.pickup_location,
+            "pickup_time_text": order.pickup_time_text,
+        }
+    except Exception:
+        current_payload = {}
     return OrderChangeRequestOut(
         id=row.id,
         order_id=row.order_id,
         passenger_telegram_id=pu.telegram_id,
         status=row.status,
         requested_payload=payload,
+        current_payload=current_payload,
         admin_comment=row.admin_comment,
         created_at=str(row.created_at),
     )
