@@ -1,9 +1,17 @@
+import html
 from decimal import Decimal
 from typing import Optional
 
 from aiogram.types import Message
 
 from app.models import Direction, Order
+
+TELEGRAM_HTML = "HTML"
+
+
+def html_escape(text: object) -> str:
+    return html.escape(str(text or ""), quote=False)
+
 
 PASSENGER_RULES = """📌 Правила пассажира:
 
@@ -12,6 +20,22 @@ PASSENGER_RULES = """📌 Правила пассажира:
 — Код действует только для одного заказа и не передаётся другим лицам.
 
 ❗ Без кода или QR-кода заказ считается неподтверждённым, и сервис ответственности не несёт."""
+
+
+def passenger_rules_html() -> str:
+    """Правила пассажира с цитатами (как в макете билета)."""
+    return (
+        "📌 Правила пассажира:\n\n"
+        "<blockquote>"
+        "— После заказа вы получаете код или QR-код.\n"
+        "— При посадке предъявите его водителю.\n"
+        "— Код действует только для одного заказа и не передаётся другим лицам."
+        "</blockquote>\n\n"
+        "<blockquote>"
+        "❗ Без кода или QR-кода заказ считается неподтверждённым, "
+        "и сервис ответственности не несёт."
+        "</blockquote>"
+    )
 
 DRIVER_RULES = """📌 ПРАВИЛА ВОДИТЕЛЯ
 
@@ -274,7 +298,8 @@ def format_driver_on_loading_accept(
 
 
 async def send_passenger_rules(message: Message, **kwargs) -> None:
-    await message.answer(PASSENGER_RULES, **kwargs)
+    kwargs.setdefault("parse_mode", TELEGRAM_HTML)
+    await message.answer(passenger_rules_html(), **kwargs)
 
 
 async def send_driver_rules(message: Message, **kwargs) -> None:

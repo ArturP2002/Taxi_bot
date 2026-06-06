@@ -102,34 +102,35 @@ def format_passenger_trip_ticket(
 ) -> str:
     from app.bot import messages as bot_messages
 
+    he = bot_messages.html_escape
     dep_label, arr_label = _departure_arrival_labels(order, direction)
     total = _order_total_price(order, direction)
     lines = [
         f"🎫 Поездка подтверждена · заказ #{order.id}",
-        f"📍 {direction.from_label} → {direction.to_label}",
-        f"Место отъезда: {order.from_location}",
-        f"Место прибытия: {order.to_location}",
+        f"📍 {he(direction.from_label)} → {he(direction.to_label)}",
+        f"Место отъезда: {he(order.from_location)}",
+        f"Место прибытия: {he(order.to_location)}",
         f"Мест: {order.seats}",
-        f"Отправление: {dep_label}",
-        f"Прибытие: {arr_label}",
+        f"Отправление: {he(dep_label)}",
+        f"Прибытие: {he(arr_label)}",
     ]
     if driver_name:
-        lines.append(f"Водитель: {driver_name}")
+        lines.append(f"Водитель: {he(driver_name)}")
     if car_info:
-        lines.append(f"Авто: {car_info}")
+        lines.append(f"Авто: {he(car_info)}")
     lines.append(f"Стоимость: {total} ₽")
     if getattr(order, "wants_pickup", False):
         surcharge = Decimal(str(order.pickup_surcharge or 0))
         note = f" (+ {surcharge} ₽)" if surcharge > 0 else " (цена уточняется оператором)"
-        lines.append(f"Доп.услуга «Забрать меня»{note}")
+        lines.append(f"Доп.услуга «Забрать меня»{he(note)}")
     if getattr(order, "wants_dropoff", False):
         surcharge = Decimal(str(getattr(order, "dropoff_surcharge", None) or 0))
         note = f" (+ {surcharge} ₽)" if surcharge > 0 else " (цена уточняется оператором)"
-        lines.append(f"Доп.услуга «Довезти до места»{note}")
+        lines.append(f"Доп.услуга «Довезти до места»{he(note)}")
     lines.append("")
-    lines.append(f"🔐 Код посадки: {code}")
+    lines.append(f"🔐 Код посадки: {he(code)}")
     lines.append("")
-    lines.append(bot_messages.PASSENGER_RULES)
+    lines.append(bot_messages.passenger_rules_html())
     return "\n".join(lines)
 
 
@@ -250,10 +251,13 @@ async def send_passenger_trip_ticket(
         file_ids = car_photo_file_ids_for_driver(driver_id)
         if file_ids:
             try:
+                from app.bot.messages import TELEGRAM_HTML
+
                 await bot.send_photo(
                     order.passenger.telegram_id,
                     file_ids[0],
                     caption=ticket_text[:1024],
+                    parse_mode=TELEGRAM_HTML,
                 )
                 photo_sent = True
             except Exception as e:
@@ -261,7 +265,13 @@ async def send_passenger_trip_ticket(
 
     if not photo_sent:
         try:
-            await bot.send_message(order.passenger.telegram_id, ticket_text)
+            from app.bot.messages import TELEGRAM_HTML
+
+            await bot.send_message(
+                order.passenger.telegram_id,
+                ticket_text,
+                parse_mode=TELEGRAM_HTML,
+            )
         except Exception as e:
             logger.warning("trip ticket message for order %s: %s", order.id, e)
             return False

@@ -209,7 +209,12 @@ async def offer_continue(cb: CallbackQuery, state: FSMContext) -> None:
         await cb.message.edit_reply_markup(reply_markup=None)
     except Exception:
         pass
-    await cb.message.answer(reg_service.prompt_registration_intro())
+    from app.bot.messages import TELEGRAM_HTML
+
+    await cb.message.answer(
+        reg_service.prompt_registration_intro(),
+        parse_mode=TELEGRAM_HTML,
+    )
     await _resume_driver_registration(cb.message, state, dprof)
     await cb.answer()
 
@@ -263,7 +268,12 @@ async def begin_driver_registration(message: Message, state: FSMContext) -> None
         )
         return
 
-    await message.answer(reg_service.prompt_registration_intro())
+    from app.bot.messages import TELEGRAM_HTML
+
+    await message.answer(
+        reg_service.prompt_registration_intro(),
+        parse_mode=TELEGRAM_HTML,
+    )
     await _resume_driver_registration(message, state, dprof)
 
 
