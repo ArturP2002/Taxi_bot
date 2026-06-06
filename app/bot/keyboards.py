@@ -120,6 +120,46 @@ def confirm_edit_kb() -> ReplyKeyboardMarkup:
     return b.as_markup(resize_keyboard=True)
 
 
+def passenger_preview_kb() -> InlineKeyboardMarkup:
+    ib = InlineKeyboardBuilder()
+    ib.button(text="✅ Отправить заявку", callback_data="pprev:submit")
+    ib.button(text="✏️ Изменить", callback_data="pprev:edit")
+    ib.button(text="❌ Отмена", callback_data="pprev:cancel")
+    ib.adjust(1)
+    return ib.as_markup()
+
+
+def passenger_preview_edit_kb() -> InlineKeyboardMarkup:
+    from app.bot.preview import PASSENGER_PREVIEW_EDIT_FIELDS
+
+    ib = InlineKeyboardBuilder()
+    for key, label in PASSENGER_PREVIEW_EDIT_FIELDS:
+        ib.button(text=label, callback_data=f"pprev:field:{key}")
+    ib.button(text="⬅️ К предпросмотру", callback_data="pprev:back")
+    ib.adjust(1)
+    return ib.as_markup()
+
+
+def driver_preview_kb() -> InlineKeyboardMarkup:
+    ib = InlineKeyboardBuilder()
+    ib.button(text="✅ Отправить анкету", callback_data="dprev:submit")
+    ib.button(text="✏️ Изменить", callback_data="dprev:edit")
+    ib.button(text="❌ Отмена", callback_data="dprev:cancel")
+    ib.adjust(1)
+    return ib.as_markup()
+
+
+def driver_preview_edit_kb() -> InlineKeyboardMarkup:
+    from app.bot.preview import DRIVER_PREVIEW_EDIT_FIELDS
+
+    ib = InlineKeyboardBuilder()
+    for key, label in DRIVER_PREVIEW_EDIT_FIELDS:
+        ib.button(text=label, callback_data=f"dprev:field:{key}")
+    ib.button(text="⬅️ К предпросмотру", callback_data="dprev:back")
+    ib.adjust(1)
+    return ib.as_markup()
+
+
 def directions_inline(
     directions: list,
     *,

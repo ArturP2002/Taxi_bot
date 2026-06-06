@@ -3,9 +3,10 @@ from decimal import Decimal
 
 from aiogram import Router, F, Bot
 from aiogram.fsm.context import FSMContext
-from aiogram.types import Message, CallbackQuery
+from aiogram.types import Message, CallbackQuery, ReplyKeyboardRemove
 
 from app.bot import keyboards
+from app.bot import preview as preview_flow
 from app.bot.states import (
     DriverRegister, ProposeDirection, DriverCode,
     DriverLoadingPhoto, DriverTransferRequest,
@@ -119,21 +120,104 @@ _DRIVER_REG_STEP_META = {
 }
 
 
-async def _enter_driver_reg_step_confirmation(
+def _persist_driver_reg_field(dprof: DriverProfile, field: str, val) -> None:
+    dprof.status = DriverStatus.PENDING.value
+    if field == "route_from":
+        reg_service.save_draft_route_from(dprof, str(val))
+    elif field == "route_to":
+        reg_service.save_draft_route_to(dprof, str(val))
+    elif field == "full_name":
+        dprof.full_name = str(val)
+        dprof.save()
+    elif field == "car_info":
+        dprof.car_info = str(val)
+        dprof.save()
+    elif field == "phone":
+        dprof.phone = str(val)
+        dprof.save()
+    elif field == "max_seats":
+        dprof.max_seats = int(val)
+        dprof.own_seats_reserved = 0
+        dprof.save()
+    elif field == "price_per_seat":
+        dprof.proposed_price_per_seat = Decimal(str(val))
+        dprof.save()
+    elif field == "fixed_price":
+        dprof.proposed_fixed_price = Decimal(str(val))
+        dprof.save()
+
+
+async def _cancel_driver_reg_flow(message: Message, state: FSMContext) -> None:
+    await state.clear()
+    await message.answer("Отменено.", reply_markup=keyboards.main_driver_kb())
+
+
+async def _cancel_or_back_to_driver_preview(message: Message, state: FSMContext) -> None:
+    data = await state.get_data()
+    if data.get("preview_edit_field"):
+        await state.update_data(preview_edit_field=None)
+        await _show_driver_preview(message, state)
+        return
+    await _cancel_driver_reg_flow(message, state)
+
+
+async def _show_driver_preview(message: Message, state: FSMContext) -> None:
+    data = await state.get_data()
+    text = preview_flow.format_driver_registration_preview(data)
+    await state.set_state(DriverRegister.confirm)
+    await message.answer(text, reply_markup=keyboards.driver_preview_kb())
+
+
+async def _advance_driver_reg_after_field(
     message: Message,
     state: FSMContext,
     *,
     field: str,
     value,
-    display: str,
+    dprof: DriverProfile,
 ) -> None:
-    await state.update_data(reg_pending_field=field, reg_pending_value=value)
-    await state.set_state(DriverRegister.confirm_step)
-    label = _DRIVER_REG_STEP_META[field]["label"]
-    await message.answer(
-        f"Подтвердите {label}: {display}",
-        reply_markup=keyboards.confirm_edit_kb(),
-    )
+    updates: dict = {field: value}
+    if field == "max_seats":
+        updates["own_seats"] = 0
+    await state.update_data(**updates)
+    _persist_driver_reg_field(dprof, field, value)
+
+    data = await state.get_data()
+    edit_field = data.get("preview_edit_field")
+
+    if field == "route_to":
+        fr = data.get("route_from", "")
+        await state.set_state(DriverRegister.return_route)
+        await message.answer(
+            f"Вы также едете обратно?\n{value} → {fr}",
+            reply_markup=keyboards.return_route_kb(),
+        )
+        return
+
+    if edit_field == field:
+        await state.update_data(preview_edit_field=None)
+        await message.answer("Готово.", reply_markup=ReplyKeyboardRemove())
+        await _show_driver_preview(message, state)
+        return
+
+    meta = _DRIVER_REG_STEP_META.get(field)
+    if not meta or meta["next_state"] == DriverRegister.confirm:
+        await message.answer("Готово.", reply_markup=ReplyKeyboardRemove())
+        await _show_driver_preview(message, state)
+        return
+
+    await state.set_state(meta["next_state"])
+    next_prompt = meta["next_prompt"]
+    if next_prompt == "return_route_prompt":
+        fr = data.get("route_from", "")
+        next_prompt = f"Вы также едете обратно?\n{value} → {fr}"
+        await message.answer(next_prompt, reply_markup=keyboards.return_route_kb())
+        return
+    if next_prompt == reg_service.REGISTRATION_PHOTOS_HINT:
+        await message.answer(next_prompt)
+        return
+    next_markup = keyboards.cancel_kb() if meta["next_markup"] == "cancel" else None
+    await message.answer(next_prompt, reply_markup=next_markup)
 
 
 def _offer_accepted(dprof: DriverProfile) -> bool:
@@ -1476,33 +1560,33 @@ async def propose_finish(message: Message, state: FSMContext, bot: Bot) -> None:
 
 @router.message(DriverRegister.route_from, F.text, _NOT_MENU_TEXT)
 async def reg_route_from(message: Message, state: FSMContext) -> None:
+    if message.text == keyboards.BTN_CANCEL:
+        await _cancel_or_back_to_driver_preview(message, state)
+        return
     ok, result = reg_service.validate_single_city(message.text)
     if not ok:
         await message.answer(result, reply_markup=keyboards.cancel_kb())
         return
-    route_from = result
-    await _enter_driver_reg_step_confirmation(
-        message,
-        state,
-        field="route_from",
-        value=route_from,
-        display=route_from,
+    ensure_user(message.from_user, prefer_driver=True)
+    dprof = DriverProfile.get(user=User.get(telegram_id=message.from_user.id))
+    await _advance_driver_reg_after_field(
+        message, state, field="route_from", value=result, dprof=dprof,
     )
 
 
 @router.message(DriverRegister.route_to, F.text, _NOT_MENU_TEXT)
 async def reg_route_to(message: Message, state: FSMContext) -> None:
+    if message.text == keyboards.BTN_CANCEL:
+        await _cancel_or_back_to_driver_preview(message, state)
+        return
     ok, result = reg_service.validate_single_city(message.text)
     if not ok:
         await message.answer(result, reply_markup=keyboards.cancel_kb())
         return
-    to_city = result
-    await _enter_driver_reg_step_confirmation(
-        message,
-        state,
-        field="route_to",
-        value=to_city,
-        display=to_city,
+    ensure_user(message.from_user, prefer_driver=True)
+    dprof = DriverProfile.get(user=User.get(telegram_id=message.from_user.id))
+    await _advance_driver_reg_after_field(
+        message, state, field="route_to", value=result, dprof=dprof,
     )
 
 
@@ -1510,12 +1594,18 @@ async def reg_route_to(message: Message, state: FSMContext) -> None:
 async def reg_return_route(cb: CallbackQuery, state: FSMContext) -> None:
     include_return = cb.data == "return_yes"
     await state.update_data(include_return=include_return)
-    data = await state.get_data()
+    data = await state.get_data()  # refreshed after include_return
     route_to = (data.get("route_to") or "").strip()
     if route_to:
         ensure_user(cb.from_user, prefer_driver=True)
         dprof = DriverProfile.get(user=User.get(telegram_id=cb.from_user.id))
         reg_service.save_draft_return_choice(dprof, route_to, include_return)
+    if data.get("preview_edit_field"):
+        await state.update_data(preview_edit_field=None)
+        await cb.message.answer("Данные обновлены.")
+        await _show_driver_preview(cb.message, state)
+        await cb.answer()
+        return
     await state.set_state(DriverRegister.full_name)
     await cb.message.answer("ФИО:")
     await cb.answer()
@@ -1530,28 +1620,30 @@ async def reg_return_route_text(message: Message) -> None:
 
 @router.message(DriverRegister.full_name, F.text, _NOT_MENU_TEXT)
 async def reg_name(message: Message, state: FSMContext) -> None:
+    if message.text == keyboards.BTN_CANCEL:
+        await _cancel_or_back_to_driver_preview(message, state)
+        return
     name = message.text.strip()
     if len(name) < 2:
         await message.answer("Введите ФИО (минимум 2 символа).")
         return
-    await _enter_driver_reg_step_confirmation(
-        message,
-        state,
-        field="full_name",
-        value=name,
-        display=name,
+    ensure_user(message.from_user, prefer_driver=True)
+    dprof = DriverProfile.get(user=User.get(telegram_id=message.from_user.id))
+    await _advance_driver_reg_after_field(
+        message, state, field="full_name", value=name, dprof=dprof,
     )
 
 
 @router.message(DriverRegister.car_info, F.text, _NOT_MENU_TEXT)
 async def reg_car(message: Message, state: FSMContext) -> None:
+    if message.text == keyboards.BTN_CANCEL:
+        await _cancel_or_back_to_driver_preview(message, state)
+        return
     car_info = message.text.strip()
-    await _enter_driver_reg_step_confirmation(
-        message,
-        state,
-        field="car_info",
-        value=car_info,
-        display=car_info,
+    ensure_user(message.from_user, prefer_driver=True)
+    dprof = DriverProfile.get(user=User.get(telegram_id=message.from_user.id))
+    await _advance_driver_reg_after_field(
+        message, state, field="car_info", value=car_info, dprof=dprof,
     )
 
 
@@ -1561,6 +1653,16 @@ def _reg_photo_file_id(message: Message) -> str | None:
     if message.document and (message.document.mime_type or "").startswith("image/"):
         return message.document.file_id
     return None
+
+
+async def _after_driver_photos(message: Message, state: FSMContext) -> None:
+    data = await state.get_data()
+    if data.get("preview_edit_field") == "photos":
+        await state.update_data(preview_edit_field=None)
+        await _show_driver_preview(message, state)
+        return
+    await state.set_state(DriverRegister.phone)
+    await message.answer("Номер телефона:", reply_markup=keyboards.cancel_kb())
 
 
 async def _reg_photo_step(
@@ -1628,10 +1730,14 @@ async def reg_photo_salon(message: Message, state: FSMContext) -> None:
     )
 
 
+@router.message(DriverRegister.photo_salon_extra, F.text == keyboards.BTN_CANCEL)
+async def reg_photo_salon_cancel(message: Message, state: FSMContext) -> None:
+    await _cancel_or_back_to_driver_preview(message, state)
+
+
 @router.message(DriverRegister.photo_salon_extra, F.text == "⏭️ Без второго фото салона")
 async def reg_photo_salon_skip(message: Message, state: FSMContext) -> None:
-    await state.set_state(DriverRegister.phone)
-    await message.answer("Номер телефона:", reply_markup=keyboards.cancel_kb())
+    await _after_driver_photos(message, state)
 
 
 @router.message(DriverRegister.photo_salon_extra, F.text, _NOT_MENU_TEXT)
@@ -1644,27 +1750,35 @@ async def reg_photo_salon_extra_hint(message: Message) -> None:
 
 @router.message(DriverRegister.photo_salon_extra, F.photo | F.document)
 async def reg_photo_salon_extra(message: Message, state: FSMContext) -> None:
-    if await _reg_photo_step(
-        message, state, kind="salon2", next_state=DriverRegister.phone,
-        next_prompt="Номер телефона:", sort_order=1,
-    ):
-        await message.answer("Номер телефона:", reply_markup=keyboards.cancel_kb())
+    fid = _reg_photo_file_id(message)
+    if not fid:
+        await message.answer("Пришлите фото (изображение).")
+        return
+    dprof = DriverProfile.get(user=User.get(telegram_id=message.from_user.id))
+    from app.services.photo_service import save_registration_photo
+
+    save_registration_photo(dprof.id, "salon2", fid, sort_order=1)
+    await _after_driver_photos(message, state)
 
 
 @router.message(DriverRegister.phone, F.text, _NOT_MENU_TEXT)
 async def reg_phone(message: Message, state: FSMContext) -> None:
+    if message.text == keyboards.BTN_CANCEL:
+        await _cancel_or_back_to_driver_preview(message, state)
+        return
     phone = message.text.strip()
-    await _enter_driver_reg_step_confirmation(
-        message,
-        state,
-        field="phone",
-        value=phone,
-        display=phone,
+    ensure_user(message.from_user, prefer_driver=True)
+    dprof = DriverProfile.get(user=User.get(telegram_id=message.from_user.id))
+    await _advance_driver_reg_after_field(
+        message, state, field="phone", value=phone, dprof=dprof,
     )
 
 
 @router.message(DriverRegister.max_seats, F.text, _NOT_MENU_TEXT)
 async def reg_max_seats(message: Message, state: FSMContext) -> None:
+    if message.text == keyboards.BTN_CANCEL:
+        await _cancel_or_back_to_driver_preview(message, state)
+        return
     if not message.text.isdigit() or int(message.text) not in range(
         keyboards.SEATS_VEHICLE_MIN, keyboards.SEATS_VEHICLE_MAX + 1
     ):
@@ -1673,164 +1787,139 @@ async def reg_max_seats(message: Message, state: FSMContext) -> None:
         )
         return
     max_seats = int(message.text)
-    await _enter_driver_reg_step_confirmation(
-        message,
-        state,
-        field="max_seats",
-        value=max_seats,
-        display=str(max_seats),
+    ensure_user(message.from_user, prefer_driver=True)
+    dprof = DriverProfile.get(user=User.get(telegram_id=message.from_user.id))
+    await _advance_driver_reg_after_field(
+        message, state, field="max_seats", value=max_seats, dprof=dprof,
     )
 
 
 @router.message(DriverRegister.price_per_seat, F.text, _NOT_MENU_TEXT)
 async def reg_price(message: Message, state: FSMContext) -> None:
+    if message.text == keyboards.BTN_CANCEL:
+        await _cancel_or_back_to_driver_preview(message, state)
+        return
     try:
         price = Decimal(message.text.replace(",", ".").strip())
     except Exception:
         await message.answer("Введите число.")
         return
-    await _enter_driver_reg_step_confirmation(
-        message,
-        state,
-        field="price_per_seat",
-        value=str(price),
-        display=str(price),
+    ensure_user(message.from_user, prefer_driver=True)
+    dprof = DriverProfile.get(user=User.get(telegram_id=message.from_user.id))
+    await _advance_driver_reg_after_field(
+        message, state, field="price_per_seat", value=str(price), dprof=dprof,
     )
 
 
 @router.message(DriverRegister.fixed_price, F.text, _NOT_MENU_TEXT)
 async def reg_fixed(message: Message, state: FSMContext) -> None:
+    if message.text == keyboards.BTN_CANCEL:
+        await _cancel_or_back_to_driver_preview(message, state)
+        return
     try:
         fixed = Decimal(message.text.replace(",", ".").strip())
     except Exception:
         await message.answer("Введите число.")
         return
-    await _enter_driver_reg_step_confirmation(
-        message,
-        state,
-        field="fixed_price",
-        value=str(fixed),
-        display=str(fixed),
+    ensure_user(message.from_user, prefer_driver=True)
+    dprof = DriverProfile.get(user=User.get(telegram_id=message.from_user.id))
+    await _advance_driver_reg_after_field(
+        message, state, field="fixed_price", value=str(fixed), dprof=dprof,
     )
 
 
-@router.message(DriverRegister.confirm_step, F.text)
-async def reg_confirm_step(message: Message, state: FSMContext) -> None:
-    if message.text == keyboards.BTN_CANCEL:
+@router.callback_query(DriverRegister.confirm, F.data.startswith("dprev:"))
+async def driver_preview_cb(cb: CallbackQuery, state: FSMContext, bot: Bot) -> None:
+    action = cb.data.split(":", 1)[1]
+    if action == "cancel":
         await state.clear()
-        await message.answer("Отменено.", reply_markup=keyboards.main_driver_kb())
+        await cb.message.answer("Отменено.", reply_markup=keyboards.main_driver_kb())
+        await cb.answer()
         return
-    data = await state.get_data()
-    field = data.get("reg_pending_field")
-    if field not in _DRIVER_REG_STEP_META:
-        await state.clear()
-        await message.answer("Сессия подтверждения устарела.", reply_markup=keyboards.main_driver_kb())
+    if action == "edit":
+        await cb.message.edit_reply_markup(reply_markup=keyboards.driver_preview_edit_kb())
+        await cb.answer()
         return
-    meta = _DRIVER_REG_STEP_META[field]
-    if message.text == keyboards.BTN_BACK:
-        await state.set_state(meta["prev_state"])
-        current_val = data.get("reg_pending_value")
-        await message.answer(
-            f"Введите значение заново.\nТекущее: {current_val if current_val not in (None, '') else '—'}",
-            reply_markup=keyboards.cancel_kb(),
-        )
+    if action == "back":
+        await cb.message.edit_reply_markup(reply_markup=keyboards.driver_preview_kb())
+        await cb.answer()
         return
-    if message.text != "✅ Подтвердить":
-        await message.answer("Нажмите «✅ Подтвердить», «⬅️ Назад» или «❌ Отмена».")
-        return
-
-    val = data.get("reg_pending_value")
-    updates = {field: val, "reg_pending_field": None, "reg_pending_value": None}
-    if field == "max_seats":
-        updates["own_seats"] = 0
-    await state.update_data(**updates)
-
-    ensure_user(message.from_user, prefer_driver=True)
-    dprof = DriverProfile.get(user=User.get(telegram_id=message.from_user.id))
-    dprof.status = DriverStatus.PENDING.value
-    if field == "route_from":
-        reg_service.save_draft_route_from(dprof, str(val))
-    elif field == "route_to":
-        reg_service.save_draft_route_to(dprof, str(val))
-    elif field == "full_name":
-        dprof.full_name = str(val)
-        dprof.save()
-    elif field == "car_info":
-        dprof.car_info = str(val)
-        dprof.save()
-    elif field == "phone":
-        dprof.phone = str(val)
-        dprof.save()
-    elif field == "max_seats":
-        dprof.max_seats = int(val)
-        dprof.own_seats_reserved = 0
-        dprof.save()
-    elif field == "price_per_seat":
-        dprof.proposed_price_per_seat = Decimal(str(val))
-        dprof.save()
-    elif field == "fixed_price":
-        dprof.proposed_fixed_price = Decimal(str(val))
-        dprof.save()
-
-    if field == "route_to":
+    if action.startswith("field:"):
+        field = action.split(":", 1)[1]
         data = await state.get_data()
-        fr = data.get("route_from", "")
-        await state.set_state(DriverRegister.return_route)
-        await message.answer(
-            f"Вы также едете обратно?\n{val} → {fr}",
-            reply_markup=keyboards.return_route_kb(),
-        )
+        await state.update_data(preview_edit_field=field)
+        if field == "route_from":
+            await state.set_state(DriverRegister.route_from)
+            await cb.message.answer(
+                reg_service.prompt_route_from(step=1)
+                + f"\n({keyboards.BTN_CANCEL} — вернуться к предпросмотру)",
+                reply_markup=keyboards.cancel_kb(),
+            )
+        elif field == "route_to":
+            await state.set_state(DriverRegister.route_to)
+            await cb.message.answer(
+                reg_service.prompt_route_to(step=2)
+                + f"\n({keyboards.BTN_CANCEL} — вернуться к предпросмотру)",
+                reply_markup=keyboards.cancel_kb(),
+            )
+        elif field == "return_route":
+            route_to = data.get("route_to", "")
+            route_from = data.get("route_from", "")
+            await state.set_state(DriverRegister.return_route)
+            await cb.message.answer(
+                f"Вы также едете обратно?\n{route_to} → {route_from}",
+                reply_markup=keyboards.return_route_kb(),
+            )
+        elif field == "full_name":
+            await state.set_state(DriverRegister.full_name)
+            await cb.message.answer("ФИО:", reply_markup=keyboards.cancel_kb())
+        elif field == "car_info":
+            await state.set_state(DriverRegister.car_info)
+            await cb.message.answer(
+                "Автомобиль (марка, модель, гос. номер):",
+                reply_markup=keyboards.cancel_kb(),
+            )
+        elif field == "photos":
+            await state.set_state(DriverRegister.photo_front)
+            await cb.message.answer(reg_service.REGISTRATION_PHOTOS_HINT)
+        elif field == "phone":
+            await state.set_state(DriverRegister.phone)
+            await cb.message.answer("Номер телефона:", reply_markup=keyboards.cancel_kb())
+        elif field == "max_seats":
+            await state.set_state(DriverRegister.max_seats)
+            await cb.message.answer(
+                f"Всего мест в машине ({keyboards.SEATS_VEHICLE_MIN}–{keyboards.SEATS_VEHICLE_MAX}):",
+                reply_markup=keyboards.cancel_kb(),
+            )
+        elif field == "price_per_seat":
+            await state.set_state(DriverRegister.price_per_seat)
+            await cb.message.answer(
+                "Цена за одно место (₽, число):",
+                reply_markup=keyboards.cancel_kb(),
+            )
+        elif field == "fixed_price":
+            await state.set_state(DriverRegister.fixed_price)
+            await cb.message.answer(
+                "Фиксированная доплата за рейс (₽, 0 если нет):",
+                reply_markup=keyboards.cancel_kb(),
+            )
+        else:
+            await cb.answer("Неизвестное поле", show_alert=True)
+            return
+        await cb.answer()
         return
-
-    if meta["next_state"] == DriverRegister.confirm:
-        data = await state.get_data()
-        route_from = data.get("route_from", "—")
-        route_to = data.get("route_to", "—")
-        await state.set_state(DriverRegister.confirm)
-        await message.answer(
-            "Проверьте анкету:\n"
-            f"Маршрут: {route_from} → {route_to}\n"
-            f"ФИО: {data.get('full_name', '—')}\n"
-            f"Авто: {data.get('car_info', '—')}\n"
-            f"Телефон: {data.get('phone', '—')}\n"
-            f"Мест: {data.get('max_seats', '—')}\n"
-            f"Тариф: {data.get('price_per_seat', '0')} + {data.get('fixed_price', '0')}",
-            reply_markup=keyboards.confirm_edit_kb(),
-        )
-        return
-
-    await state.set_state(meta["next_state"])
-    next_markup = keyboards.cancel_kb() if meta["next_markup"] == "cancel" else None
-    await message.answer(meta["next_prompt"], reply_markup=next_markup)
-
-
-@router.message(DriverRegister.confirm, F.text)
-async def reg_confirm(message: Message, state: FSMContext, bot: Bot) -> None:
-    if message.text == keyboards.BTN_CANCEL:
-        await state.clear()
-        await message.answer("Отменено.", reply_markup=keyboards.main_driver_kb())
-        return
-    if message.text == keyboards.BTN_BACK:
-        data = await state.get_data()
-        await state.set_state(DriverRegister.fixed_price)
-        await message.answer(
-            f"Вернулись на шаг фиксированной доплаты.\n"
-            f"Текущее: {data.get('fixed_price', '—')}\n"
-            "Введите значение:",
-            reply_markup=keyboards.cancel_kb(),
-        )
-        return
-    if message.text != "✅ Подтвердить":
-        await message.answer("Нажмите «✅ Подтвердить», «⬅️ Назад» или «❌ Отмена».")
+    if action != "submit":
+        await cb.answer()
         return
 
     data = await state.get_data()
-    ensure_user(message.from_user, prefer_driver=True)
-    dprof = DriverProfile.get(user=User.get(telegram_id=message.from_user.id))
+    message = cb.message
+    ensure_user(cb.from_user, prefer_driver=True)
+    dprof = DriverProfile.get(user=User.get(telegram_id=cb.from_user.id))
     ok, result = await reg_service.finalize_driver_registration(
         bot,
         dprof=dprof,
-        telegram_id=message.from_user.id,
+        telegram_id=cb.from_user.id,
         data=data,
     )
     if not ok:
@@ -1841,14 +1930,17 @@ async def reg_confirm(message: Message, state: FSMContext, bot: Bot) -> None:
                 + f"\n({keyboards.BTN_CANCEL} — выйти в меню)",
                 reply_markup=keyboards.cancel_kb(),
             )
+            await cb.answer()
             return
         if result == "ФИО не указано. Введите ФИО:":
             await state.set_state(DriverRegister.full_name)
         await message.answer(result)
+        await cb.answer()
         return
 
     await state.clear()
     await message.answer(result, reply_markup=keyboards.main_driver_kb())
+    await cb.answer()
 
 
 @router.message(DriverLoadingPhoto.waiting, F.photo | F.document)
