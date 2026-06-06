@@ -775,7 +775,8 @@ function showEditOrder(orderId) {
   html += '<div class="form-group"><label>Куда</label><input id="eo-to" value="' + esc(o.to_location) + '"/></div>';
   html += '<div class="form-group"><label>Место подачи (адрес)</label><input id="eo-pickup" value="' + esc(o.pickup_location) + '"/></div>';
   html += '<div class="form-group"><label>Время убытия</label><input id="eo-time" value="' + esc(o.pickup_time_text) + '"/></div>';
-  html += '<div class="form-group"><label>Доплата за подачу (₽)</label><input id="eo-surcharge" type="number" step="0.01" value="0"/></div>';
+  html += '<div class="form-group"><label>Доплата «Забрать меня» (₽)</label><input id="eo-surcharge" type="number" step="0.01" value="' + (o.pickup_surcharge || 0) + '"/></div>';
+  html += '<div class="form-group"><label>Доплата «Довезти до места» (₽)</label><input id="eo-dropoff-surcharge" type="number" step="0.01" value="' + (o.dropoff_surcharge || 0) + '"/></div>';
   html += '<div class="form-group"><label>Статус</label><select id="eo-status"><option value="">— не менять —</option>';
   ['new','awaiting_payment','assigned','in_progress','admin_review','cancelled'].forEach(function(s) {
     html += '<option value="' + s + '"' + (o.status === s ? ' selected' : '') + '>' + statusLabel(s) + '</option>';
@@ -793,7 +794,8 @@ function doEditOrder(orderId) {
     to_location: document.getElementById('eo-to').value.trim(),
     pickup_location: document.getElementById('eo-pickup').value.trim() || null,
     pickup_time_text: document.getElementById('eo-time').value.trim() || null,
-    pickup_surcharge: parseFloat(document.getElementById('eo-surcharge').value) || 0
+    pickup_surcharge: parseFloat(document.getElementById('eo-surcharge').value) || 0,
+    dropoff_surcharge: parseFloat(document.getElementById('eo-dropoff-surcharge').value) || 0
   };
   var st = document.getElementById('eo-status').value;
   if (st) body.status = st;

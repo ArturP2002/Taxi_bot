@@ -15,7 +15,6 @@ from app.models import (
     UserRole,
 )
 from app.services import order_service, code_service
-from app.services.boarding_credentials import send_passenger_boarding_credentials
 
 
 async def try_verify_from_deeplink(
@@ -79,9 +78,9 @@ async def try_verify_from_deeplink(
             f"Это ваш заказ #{order.id}.\n"
             f"Код посадки: {parsed.code}\n"
             f"{direction.from_label} → {direction.to_label}\n\n"
-            "Покажите QR или назовите код водителю при посадке.",
+            "Покажите QR или назовите код водителю при посадке.\n"
+            "Повторно получить билет — кнопка «🔐 Код и QR» в меню.",
         )
-        await send_passenger_boarding_credentials(bot, order, code=parsed.code, direction=direction)
         return True
 
     await message.answer(

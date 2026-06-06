@@ -165,6 +165,17 @@ MIGRATIONS: list[tuple[str, list[str]]] = [
             "ALTER TABLE orders ADD COLUMN reminder_30m_sent_at TEXT",
         ],
     ),
+    (
+        "20260606_v12_passenger_ux",
+        [
+            "ALTER TABLE passenger_profiles ADD COLUMN terms_accepted_at TEXT",
+            "ALTER TABLE passenger_profiles ADD COLUMN privacy_accepted_at TEXT",
+            "ALTER TABLE orders ADD COLUMN wants_pickup INTEGER DEFAULT 0",
+            "ALTER TABLE orders ADD COLUMN wants_dropoff INTEGER DEFAULT 0",
+            "ALTER TABLE orders ADD COLUMN dropoff_surcharge DECIMAL(12,2) DEFAULT 0",
+            "ALTER TABLE orders ADD COLUMN passenger_ticket_sent_at TEXT",
+        ],
+    ),
 ]
 
 

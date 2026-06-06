@@ -1,6 +1,11 @@
 from datetime import datetime, timezone
 
-from app.util.time_format import format_datetime_display, parse_datetime_display
+from app.util.time_format import (
+    format_date_display,
+    format_datetime_display,
+    parse_date_display,
+    parse_datetime_display,
+)
 
 
 def test_format_and_parse_display_datetime():
@@ -25,3 +30,9 @@ def test_parse_display_datetime_dot_time_separator():
 def test_parse_display_datetime_flexible_separators():
     parsed = parse_datetime_display("29-05-2026 08,00")
     assert parsed == datetime(2026, 5, 29, 8, 0, tzinfo=timezone.utc)
+
+
+def test_parse_and_format_date_only():
+    parsed = parse_date_display("01.06.2026")
+    assert parsed == datetime(2026, 6, 1, 0, 0, tzinfo=timezone.utc)
+    assert format_date_display(parsed) == "01.06.2026"

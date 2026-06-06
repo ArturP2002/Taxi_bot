@@ -66,6 +66,10 @@ class Order(BaseModel):
     pickup_location = TextField(null=True)
     pickup_time_text = TextField(null=True)
     pickup_surcharge = DecimalField(max_digits=12, decimal_places=2, default=Decimal("0"))
+    wants_pickup = BooleanField(default=False)
+    wants_dropoff = BooleanField(default=False)
+    dropoff_surcharge = DecimalField(max_digits=12, decimal_places=2, default=Decimal("0"))
+    passenger_ticket_sent_at = DateTimeField(null=True)
     transfer_requested_at = DateTimeField(null=True)
     transfer_note = TextField(null=True)
     scheduled_trip = ForeignKeyField(

@@ -142,7 +142,6 @@ def direction_groups_inline(
     total_pages: int = 1,
     mode: str = "browse",
 ) -> InlineKeyboardMarkup:
-    """Show туда/обратно pairs adjacent (↩ on return leg)."""
     ib = InlineKeyboardBuilder()
     for g in groups:
         d = g.forward
@@ -150,7 +149,10 @@ def direction_groups_inline(
         ib.button(text=label[:58], callback_data=f"dirpick:{d.id}")
         if g.reverse:
             r = g.reverse
-            ib.button(text=f"↩ {r.from_label} → {r.to_label}"[:58], callback_data=f"dirpick:{r.id}")
+            ib.button(
+                text=f"{r.from_label} → {r.to_label}"[:58],
+                callback_data=f"dirpick:{r.id}",
+            )
     ib.adjust(1)
     return _directions_nav(ib, page=page, total_pages=total_pages, mode=mode)
 
@@ -287,11 +289,49 @@ def trip_calendar_kb(
     ])
     rows.append([
         InlineKeyboardButton(
-            text="📝 Указать свою дату и время",
+            text="📝 Указать свою дату",
             callback_data=f"tcal:custom:{direction_id}",
         )
     ])
     return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def passenger_consent_kb(
+    *,
+    terms_agreed: bool,
+    privacy_agreed: bool,
+    terms_url: str,
+    privacy_url: str,
+) -> InlineKeyboardMarkup:
+    rows: list[list[InlineKeyboardButton]] = []
+    if terms_url.strip():
+        rows.append([
+            InlineKeyboardButton(text="📄 Пользовательское соглашение", url=terms_url.strip())
+        ])
+    terms_label = "☑ Согласен с соглашением" if terms_agreed else "Согласен с соглашением"
+    rows.append([InlineKeyboardButton(text=terms_label, callback_data="pconsent:terms")])
+    if privacy_url.strip():
+        rows.append([
+            InlineKeyboardButton(
+                text="📄 Согласие на обработку ПДн",
+                url=privacy_url.strip(),
+            )
+        ])
+    privacy_label = "☑ Согласен на обработку ПДн" if privacy_agreed else "Согласен на обработку ПДн"
+    rows.append([InlineKeyboardButton(text=privacy_label, callback_data="pconsent:privacy")])
+    rows.append([InlineKeyboardButton(text="Продолжить", callback_data="pconsent:continue")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def passenger_extras_kb(*, wants_pickup: bool, wants_dropoff: bool, direction_id: int) -> InlineKeyboardMarkup:
+    pickup_label = "☑ Забрать меня" if wants_pickup else "Забрать меня"
+    dropoff_label = "☑ Довезти до места" if wants_dropoff else "Довезти до места"
+    ib = InlineKeyboardBuilder()
+    ib.button(text=pickup_label, callback_data=f"pextra:pickup:{direction_id}")
+    ib.button(text=dropoff_label, callback_data=f"pextra:dropoff:{direction_id}")
+    ib.button(text="Продолжить", callback_data=f"pextra:continue:{direction_id}")
+    ib.adjust(1)
+    return ib.as_markup()
 
 
 def scheduled_trips_pick_kb(trips: list) -> InlineKeyboardMarkup:

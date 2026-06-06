@@ -270,8 +270,11 @@ def create_app() -> FastAPI:
             logger.info("Webhook update received: id=%s", update_id)
         except Exception:
             pass
-        update = Update.model_validate(data, context={"bot": bot})
-        await dp.feed_update(bot, update)
+        try:
+            update = Update.model_validate(data, context={"bot": bot})
+            await dp.feed_update(bot, update)
+        except Exception:
+            logger.exception("Telegram webhook processing failed")
         return Response()
 
     return app

@@ -7,16 +7,7 @@ from typing import Optional
 
 from aiogram import Bot
 
-from app.models import (
-    AssignmentStatus,
-    Direction,
-    DriverProfile,
-    Order,
-    OrderDriverAssignment,
-    OrderStatus,
-    QueueEntry,
-    User,
-)
+from app.models import Direction, DriverProfile, QueueEntry
 from app.services import loading_service, order_service, queue_service
 from app.services import queue_eta_service
 from app.bot import messages
@@ -36,7 +27,6 @@ async def broadcast_loading_update(
     loading_session_id: Optional[str] = None,
 ) -> None:
     direction = Direction.get_by_id(direction_id)
-    route_label = f"{direction.from_label} → {direction.to_label}"
 
     for snap in loading_service.drivers_loading_on_direction(direction_id):
         drv = DriverProfile.get_by_id(snap.driver_id)
@@ -57,57 +47,6 @@ async def broadcast_loading_update(
             await bot.send_message(drv.user.telegram_id, text)
         except Exception as e:
             logger.warning("loading notify driver %s: %s", drv.id, e)
-
-    assignments = (
-        OrderDriverAssignment.select(OrderDriverAssignment, Order, DriverProfile)
-        .join(Order)
-        .switch(OrderDriverAssignment)
-        .join(DriverProfile)
-        .where(
-            (Order.direction_id == direction_id)
-            & (OrderDriverAssignment.status == AssignmentStatus.ACCEPTED.value)
-            & (Order.status == OrderStatus.ASSIGNED.value)
-        )
-    )
-    for ass in assignments:
-        o = ass.order
-        drv = ass.driver
-        d = direction
-        slot = queue_eta_service.eta_for_driver(d.id, drv.id)
-        eta_label = slot.label if slot else None
-        try:
-            pu = User.get_by_id(o.passenger_id)
-            text = messages.format_passenger_loading_update(
-                order=o,
-                direction=d,
-                driver_name=drv.full_name or f"ID:{drv.id}",
-                car_info=drv.car_info,
-                status_label=loading_service.driver_loading_snapshot(drv).status_label,
-                eta_label=eta_label,
-            )
-            await bot.send_message(pu.telegram_id, text)
-        except Exception as e:
-            logger.warning("loading notify passenger order %s: %s", o.id, e)
-
-    loading_drv = loading_service.drivers_loading_on_direction(direction_id)
-    if loading_drv:
-        from app.services.photo_service import send_car_photos_to_passengers
-
-        drv = DriverProfile.get_by_id(loading_drv[0].driver_id)
-        if getattr(drv, "loading_photos_ok_at", None):
-            n = await send_car_photos_to_passengers(
-                bot,
-                drv,
-                direction_id,
-                session_id=loading_session_id,
-                route_label=route_label,
-            )
-            if n:
-                logger.info(
-                    "Sent loading car photos to %s passengers (driver %s)",
-                    n,
-                    drv.id,
-                )
 
     qe = (
         QueueEntry.select()

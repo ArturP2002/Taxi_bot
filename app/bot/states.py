@@ -5,8 +5,13 @@ class DriverOfferConsent(StatesGroup):
     consent = State()
 
 
+class PassengerConsent(StatesGroup):
+    consent = State()
+
+
 class PassengerOrder(StatesGroup):
     choosing_direction = State()
+    choosing_extras = State()
     choosing_trip_date = State()
     requested_departure = State()
     direction_search = State()

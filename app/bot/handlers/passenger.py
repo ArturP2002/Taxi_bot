@@ -7,9 +7,9 @@ from aiogram.fsm.context import FSMContext
 from aiogram.types import Message, CallbackQuery
 
 from app.bot import keyboards
-from app.bot.states import PassengerOrder, PassengerCabinet
+from app.bot.states import PassengerConsent, PassengerOrder, PassengerCabinet
 from app.bot import messages as bot_messages
-from app.bot.messages import send_passenger_rules
+from app.bot.safe_callbacks import parse_callback_int
 from app.bot.users import ensure_user
 from app.config import get_settings
 from app.models import (
@@ -19,17 +19,15 @@ from app.models import (
     PassengerPaymentStatus,
     OrderChangeRequest,
     OrderChangeRequestStatus,
+    PassengerProfile,
     User,
 )
-from app.services import code_service, order_service
+from app.services import order_service
 from app.services import direction_search
 from app.services.admin_notify import notify_new_order, notify_order_change_request
 from app.services import passenger_payment_service
 from app.services import scheduled_trip_service
-from app.services.boarding_credentials import (
-    send_passenger_boarding_credentials,
-    boarding_code_for_order,
-)
+from app.services.boarding_credentials import boarding_code_for_order
 
 router = Router(name="passenger")
 
@@ -45,22 +43,8 @@ _CHANGE_FIELD_LABELS = {
 
 _PASSENGER_STEP_META = {
     "requested_departure_at": {
-        "label": "дату и время выезда",
+        "label": "дату выезда",
         "prev_state": PassengerOrder.requested_departure,
-        "next_state": PassengerOrder.from_location,
-        "next_prompt": "Точка отправления (текстом):",
-        "next_markup": "cancel",
-    },
-    "from_location": {
-        "label": "точку отправления",
-        "prev_state": PassengerOrder.from_location,
-        "next_state": PassengerOrder.to_location,
-        "next_prompt": "Точка назначения:",
-        "next_markup": "cancel",
-    },
-    "to_location": {
-        "label": "точку назначения",
-        "prev_state": PassengerOrder.to_location,
         "next_state": PassengerOrder.seats,
         "next_prompt": "Количество мест:",
         "next_markup": "seats",
@@ -88,9 +72,9 @@ def _normalized_display_for_field(field: str, value) -> str:
             dep = datetime.fromisoformat(str(value))
             if dep.tzinfo is None:
                 dep = dep.replace(tzinfo=timezone.utc)
-            from app.util.time_format import format_datetime_display
+            from app.util.time_format import format_departure_label
 
-            return format_datetime_display(dep)
+            return format_departure_label(dep)
         except Exception:
             return str(value)
     return str(value)
@@ -131,7 +115,7 @@ async def _show_directions_page(message_or_cb, state: FSMContext, page: int = 0,
             await message_or_cb.message.answer(text)
         return
     kb = keyboards.direction_groups_inline(chunk, page=page, total_pages=pages, mode=mode)
-    text = f"Выберите направление (стр. {page + 1}/{pages}). Пара ↩ — обратный рейс:"
+    text = f"Выберите направление (стр. {page + 1}/{pages}):"
     if hasattr(message_or_cb, "message"):
         await message_or_cb.message.edit_text(text, reply_markup=kb)
     else:
@@ -148,14 +132,16 @@ def _passenger_blocked(user) -> bool:
         return False
 
 
-async def continue_start_order(message: Message, state: FSMContext) -> None:
-    ensure_user(message.from_user)
-    if _passenger_blocked(message.from_user):
-        await message.answer(
-            "Доступ ограничен. Обратитесь к администратору сервиса."
-        )
-        return
-    await send_passenger_rules(message)
+def _passenger_has_consent(user) -> bool:
+    u = User.get(telegram_id=user.id)
+    try:
+        profile = PassengerProfile.get(user=u)
+    except PassengerProfile.DoesNotExist:
+        return False
+    return bool(profile.terms_accepted_at and profile.privacy_accepted_at)
+
+
+async def _start_direction_picker(message: Message, state: FSMContext) -> None:
     directions = direction_search.list_enabled_directions()
     if not directions:
         await message.answer("Направления пока недоступны.")
@@ -163,6 +149,89 @@ async def continue_start_order(message: Message, state: FSMContext) -> None:
     await state.set_state(PassengerOrder.choosing_direction)
     await state.update_data(search_results=None, dir_mode="browse")
     await _show_directions_page(message, state, 0, "browse")
+
+
+async def _show_passenger_consent(message: Message, state: FSMContext) -> None:
+    settings = get_settings()
+    await state.set_state(PassengerConsent.consent)
+    await state.update_data(terms_agreed=False, privacy_agreed=False)
+    await message.answer(
+        "Перед заказом поездки необходимо принять условия:\n"
+        "1) откройте документы (кнопки ниже);\n"
+        "2) нажмите «Согласен» у каждого пункта;\n"
+        "3) нажмите «Продолжить».",
+        reply_markup=keyboards.passenger_consent_kb(
+            terms_agreed=False,
+            privacy_agreed=False,
+            terms_url=settings.passenger_terms_url,
+            privacy_url=settings.passenger_privacy_url,
+        ),
+    )
+
+
+async def continue_start_order(message: Message, state: FSMContext) -> None:
+    ensure_user(message.from_user)
+    if _passenger_blocked(message.from_user):
+        await message.answer(
+            "Доступ ограничен. Обратитесь к администратору сервиса."
+        )
+        return
+    if not _passenger_has_consent(message.from_user):
+        await _show_passenger_consent(message, state)
+        return
+    await _start_direction_picker(message, state)
+
+
+@router.callback_query(F.data.startswith("pconsent:"))
+async def passenger_consent_cb(cb: CallbackQuery, state: FSMContext) -> None:
+    if _passenger_has_consent(cb.from_user):
+        await cb.answer("Согласия уже приняты")
+        return
+    action = cb.data.split(":", 1)[1]
+    data = await state.get_data()
+    settings = get_settings()
+    if action == "terms":
+        data["terms_agreed"] = not bool(data.get("terms_agreed"))
+    elif action == "privacy":
+        data["privacy_agreed"] = not bool(data.get("privacy_agreed"))
+    elif action == "continue":
+        if not (data.get("terms_agreed") and data.get("privacy_agreed")):
+            await cb.answer("Сначала примите оба согласия", show_alert=True)
+            return
+        from app.util.datetimeutil import utcnow
+
+        u = User.get(telegram_id=cb.from_user.id)
+        profile, _ = PassengerProfile.get_or_create(user=u)
+        now = utcnow()
+        profile.terms_accepted_at = now
+        profile.privacy_accepted_at = now
+        profile.save()
+        await state.clear()
+        try:
+            await cb.message.edit_reply_markup(reply_markup=None)
+        except Exception:
+            pass
+        await cb.message.answer("Согласия приняты.")
+        await _start_direction_picker(cb.message, state)
+        await cb.answer()
+        return
+    else:
+        await cb.answer()
+        return
+    await state.set_state(PassengerConsent.consent)
+    await state.update_data(**data)
+    try:
+        await cb.message.edit_reply_markup(
+            reply_markup=keyboards.passenger_consent_kb(
+                terms_agreed=bool(data.get("terms_agreed")),
+                privacy_agreed=bool(data.get("privacy_agreed")),
+                terms_url=settings.passenger_terms_url,
+                privacy_url=settings.passenger_privacy_url,
+            ),
+        )
+    except Exception:
+        pass
+    await cb.answer("Согласие принято" if action in {"terms", "privacy"} else "")
 
 
 @router.callback_query(PassengerOrder.choosing_direction, F.data == "dirsearch")
@@ -197,24 +266,103 @@ async def direction_page(cb: CallbackQuery, state: FSMContext) -> None:
     await cb.answer()
 
 
+async def _show_route_extras(cb_or_msg, state: FSMContext, direction: Direction) -> None:
+    data = await state.get_data()
+    wants_pickup = bool(data.get("wants_pickup"))
+    wants_dropoff = bool(data.get("wants_dropoff"))
+    text = (
+        f"📍 Маршрут: {direction.from_label} → {direction.to_label}\n"
+        f"Место отъезда: {direction.from_label}\n"
+        f"Место прибытия: {direction.to_label}\n\n"
+        "Доп.услуги (цена согласуется с оператором):"
+    )
+    kb = keyboards.passenger_extras_kb(
+        wants_pickup=wants_pickup,
+        wants_dropoff=wants_dropoff,
+        direction_id=direction.id,
+    )
+    if hasattr(cb_or_msg, "message"):
+        await cb_or_msg.message.answer(text, reply_markup=kb)
+    else:
+        await cb_or_msg.answer(text, reply_markup=kb)
+
+
 @router.callback_query(PassengerOrder.choosing_direction, F.data.startswith("dirpick:"))
 async def pick_direction(cb: CallbackQuery, state: FSMContext) -> None:
-    did = int(cb.data.split(":")[1])
-    await state.update_data(direction_id=did, scheduled_trip_id=None)
-    await state.set_state(PassengerOrder.choosing_trip_date)
-    now = datetime.now(timezone.utc)
-    avail = scheduled_trip_service.available_dates_for_direction(did)
-    hint = (
-        "Выберите дату рейса (кнопки ниже) или «Как можно скорее» — без привязки к расписанию."
+    did = parse_callback_int(cb.data)
+    if did is None:
+        await cb.answer("Некорректные данные", show_alert=True)
+        return
+    try:
+        direction = Direction.get_by_id(did)
+    except Direction.DoesNotExist:
+        await cb.answer("Направление не найдено", show_alert=True)
+        return
+    await state.update_data(
+        direction_id=did,
+        scheduled_trip_id=None,
+        from_location=direction.from_label,
+        to_location=direction.to_label,
+        wants_pickup=False,
+        wants_dropoff=False,
     )
-    if not avail:
-        hint += "\n\nНа ближайшие месяцы рейсов пока нет — администратор добавит их в календаре."
-    await cb.message.answer(
-        hint,
-        reply_markup=keyboards.trip_calendar_kb(
-            now.year, now.month, available_dates=avail, direction_id=did
-        ),
-    )
+    await state.set_state(PassengerOrder.choosing_extras)
+    await _show_route_extras(cb, state, direction)
+    await cb.answer()
+
+
+@router.callback_query(PassengerOrder.choosing_extras, F.data.startswith("pextra:"))
+async def passenger_extras_cb(cb: CallbackQuery, state: FSMContext) -> None:
+    parts = cb.data.split(":")
+    if len(parts) < 3:
+        await cb.answer()
+        return
+    action = parts[1]
+    did = parse_callback_int(cb.data, 2)
+    if did is None:
+        await cb.answer("Некорректные данные", show_alert=True)
+        return
+    data = await state.get_data()
+    if action == "pickup":
+        data["wants_pickup"] = not bool(data.get("wants_pickup"))
+    elif action == "dropoff":
+        data["wants_dropoff"] = not bool(data.get("wants_dropoff"))
+    elif action == "continue":
+        await state.update_data(**data)
+        await state.set_state(PassengerOrder.choosing_trip_date)
+        now = datetime.now(timezone.utc)
+        avail = scheduled_trip_service.available_dates_for_direction(did)
+        hint = (
+            "Выберите дату рейса (кнопки ниже) или «Как можно скорее» — "
+            "без привязки к расписанию."
+        )
+        await cb.message.answer(
+            hint,
+            reply_markup=keyboards.trip_calendar_kb(
+                now.year, now.month, available_dates=avail, direction_id=did
+            ),
+        )
+        await cb.answer()
+        return
+    else:
+        await cb.answer()
+        return
+    await state.update_data(**data)
+    try:
+        direction = Direction.get_by_id(did)
+    except Direction.DoesNotExist:
+        await cb.answer("Направление не найдено", show_alert=True)
+        return
+    try:
+        await cb.message.edit_reply_markup(
+            reply_markup=keyboards.passenger_extras_kb(
+                wants_pickup=bool(data.get("wants_pickup")),
+                wants_dropoff=bool(data.get("wants_dropoff")),
+                direction_id=did,
+            ),
+        )
+    except Exception:
+        await _show_route_extras(cb, state, direction)
     await cb.answer()
 
 
@@ -228,23 +376,25 @@ async def trip_calendar_cb(cb: CallbackQuery, state: FSMContext) -> None:
     direction_id = int(parts[2])
     if action == "asap":
         await state.update_data(scheduled_trip_id=None, requested_departure_at=None)
-        await state.set_state(PassengerOrder.from_location)
-        await cb.message.answer("Точка отправления (текстом):", reply_markup=keyboards.cancel_kb())
+        await state.set_state(PassengerOrder.seats)
+        await cb.message.answer("Количество мест:", reply_markup=keyboards.seats_kb())
         await cb.answer()
         return
     if action == "custom":
-        from app.util.time_format import DATETIME_DISPLAY_HINT
+        from app.util.time_format import DATE_DISPLAY_HINT
 
         await state.update_data(scheduled_trip_id=None)
         await state.set_state(PassengerOrder.requested_departure)
         await cb.message.answer(
-            f"Укажите желаемую дату и время выезда.\nФормат: {DATETIME_DISPLAY_HINT}",
+            "Укажите желаемую дату.\n"
+            "Время отправления согласуется с оператором.\n"
+            f"Формат: {DATE_DISPLAY_HINT}",
             reply_markup=keyboards.cancel_kb(),
         )
         await cb.answer()
         return
     if action in {"nav", "day", "trip"}:
-        await cb.answer("Выбор дат через кнопки отключён. Используйте «Указать свою дату и время».", show_alert=True)
+        await cb.answer("Выбор дат через кнопки отключён. Используйте «Указать свою дату».", show_alert=True)
         return
     await cb.answer()
 
@@ -255,16 +405,16 @@ async def requested_departure_enter(message: Message, state: FSMContext) -> None
         await state.clear()
         await message.answer("Отменено.", reply_markup=keyboards.main_passenger_kb())
         return
-    from app.util.time_format import parse_datetime_display, DATETIME_DISPLAY_HINT
+    from app.util.time_format import parse_date_display, DATE_DISPLAY_HINT
     from app.services import trip_request_service
 
     try:
-        dep = parse_datetime_display(message.text.strip())
+        dep = parse_date_display(message.text.strip())
         trip_request_service.validate_requested_departure(dep)
     except ValueError as e:
         err = str(e)
         if err == "departure_in_past":
-            await message.answer("Укажите дату и время в будущем.")
+            await message.answer("Укажите дату в будущем.")
             return
         if err == "departure_too_far":
             settings = get_settings()
@@ -273,12 +423,12 @@ async def requested_departure_enter(message: Message, state: FSMContext) -> None
                 f"{settings.scheduled_trip_booking_days_ahead} дней вперёд."
             )
             return
-        await message.answer(f"Неверный формат. {DATETIME_DISPLAY_HINT}")
+        await message.answer(f"Неверный формат. {DATE_DISPLAY_HINT}")
         return
     await state.update_data(scheduled_trip_id=None)
-    from app.util.time_format import format_datetime_display
+    from app.util.time_format import format_date_display
 
-    accepted = format_datetime_display(dep)
+    accepted = format_date_display(dep)
     await message.answer(f"Принято: {accepted}")
     await _enter_passenger_step_confirmation(
         message,
@@ -286,38 +436,6 @@ async def requested_departure_enter(message: Message, state: FSMContext) -> None
         field="requested_departure_at",
         value=dep.isoformat(),
         display=accepted,
-    )
-
-
-@router.message(PassengerOrder.from_location, F.text)
-async def from_loc(message: Message, state: FSMContext) -> None:
-    if message.text == "❌ Отмена":
-        await state.clear()
-        await message.answer("Отменено.", reply_markup=keyboards.main_passenger_kb())
-        return
-    text = message.text.strip()
-    await _enter_passenger_step_confirmation(
-        message,
-        state,
-        field="from_location",
-        value=text,
-        display=text,
-    )
-
-
-@router.message(PassengerOrder.to_location, F.text)
-async def to_loc(message: Message, state: FSMContext) -> None:
-    if message.text == "❌ Отмена":
-        await state.clear()
-        await message.answer("Отменено.", reply_markup=keyboards.main_passenger_kb())
-        return
-    text = message.text.strip()
-    await _enter_passenger_step_confirmation(
-        message,
-        state,
-        field="to_location",
-        value=text,
-        display=text,
     )
 
 
@@ -371,13 +489,13 @@ async def passenger_confirm_step(message: Message, state: FSMContext) -> None:
     if message.text == keyboards.BTN_BACK:
         await state.set_state(meta["prev_state"])
         current_val = data.get("pending_value")
-        from app.util.time_format import format_datetime_display
+        from app.util.time_format import format_departure_label
         if field == "requested_departure_at" and current_val:
             try:
                 dep = datetime.fromisoformat(str(current_val))
                 if dep.tzinfo is None:
                     dep = dep.replace(tzinfo=timezone.utc)
-                shown = format_datetime_display(dep)
+                shown = format_departure_label(dep)
             except Exception:
                 shown = str(current_val)
         else:
@@ -395,22 +513,27 @@ async def passenger_confirm_step(message: Message, state: FSMContext) -> None:
     if meta["next_state"] == PassengerOrder.confirm:
         data = await state.get_data()
         direction = Direction.get_by_id(data["direction_id"])
-        from app.util.time_format import format_datetime_display
+        from app.util.time_format import format_departure_label
 
         req_txt = ""
         if data.get("requested_departure_at"):
             dep = datetime.fromisoformat(data["requested_departure_at"])
             if dep.tzinfo is None:
                 dep = dep.replace(tzinfo=timezone.utc)
-            req_txt = f"\nВыезд: {format_datetime_display(dep)}"
+            req_txt = f"\nДата: {format_departure_label(dep)}"
+        extras_txt = ""
+        if data.get("wants_pickup"):
+            extras_txt += "\nДоп.услуга: Забрать меня"
+        if data.get("wants_dropoff"):
+            extras_txt += "\nДоп.услуга: Довезти до места"
         await state.set_state(PassengerOrder.confirm)
         await message.answer(
             "Проверьте заявку перед отправкой:\n"
             f"Маршрут: {direction.from_label} → {direction.to_label}{req_txt}\n"
-            f"Откуда: {data['from_location']}\n"
-            f"Куда: {data['to_location']}\n"
+            f"Место отъезда: {data['from_location']}\n"
+            f"Место прибытия: {data['to_location']}\n"
             f"Мест: {data['seats']}\n"
-            f"Телефон: {data['phone']}",
+            f"Телефон: {data['phone']}{extras_txt}",
             reply_markup=keyboards.confirm_edit_kb(),
         )
         return
@@ -450,7 +573,21 @@ async def passenger_confirm_submit(message: Message, state: FSMContext, bot: Bot
             reply_markup=keyboards.main_passenger_kb(),
         )
         return
-    direction = Direction.get_by_id(data["direction_id"])
+    direction_id = data.get("direction_id")
+    if not direction_id:
+        await message.answer(
+            "Данные заявки устарели. Начните заказ заново.",
+            reply_markup=keyboards.main_passenger_kb(),
+        )
+        return
+    try:
+        direction = Direction.get_by_id(direction_id)
+    except Direction.DoesNotExist:
+        await message.answer(
+            "Направление недоступно. Начните заказ заново.",
+            reply_markup=keyboards.main_passenger_kb(),
+        )
+        return
     now = datetime.now(timezone.utc)
     requested_iso = data.get("requested_departure_at")
     is_trip_request = bool(requested_iso) and not data.get("scheduled_trip_id")
@@ -498,16 +635,14 @@ async def passenger_confirm_submit(message: Message, state: FSMContext, bot: Bot
         phone=data["phone"].strip(),
         status=order_status,
         passenger_payment_status=pay_status,
-        confirmation_code_hash="pending" if is_trip_request else "tmp",
-        code_issued_at=None if is_trip_request else now,
+        confirmation_code_hash="pending",
+        code_issued_at=None,
         scheduled_trip_id=int(trip_id) if trip_id else None,
         scheduled_activated=scheduled_activated,
         requested_departure_at=requested_dep,
+        wants_pickup=bool(data.get("wants_pickup")),
+        wants_dropoff=bool(data.get("wants_dropoff")),
     )
-    code = None
-    if not is_trip_request:
-        code = code_service.generate_six_digit_code()
-        code_service.persist_boarding_code(order.id, code)
     order = Order.get_by_id(order.id)
     from app.services import loading_service
 
@@ -539,16 +674,17 @@ async def passenger_confirm_submit(message: Message, state: FSMContext, bot: Bot
             except ValueError:
                 pass
 
-        dep_label = format_datetime_display(requested_dep)
+        from app.util.time_format import format_departure_label
+
+        dep_label = format_departure_label(requested_dep)
         caption = (
             f"✅ Заявка принята · #{order.id}\n"
             f"📍 {direction.from_label} → {direction.to_label}\n"
-            f"🕐 Желаемый выезд: {dep_label}\n"
-            f"Откуда: {order.from_location}\n"
-            f"Куда: {order.to_location}\n"
+            f"📅 Желаемая дата: {dep_label}\n"
+            f"Место отъезда: {order.from_location}\n"
+            f"Место прибытия: {order.to_location}\n"
             f"Мест: {order.seats}\n\n"
-            "Администратор создаст рейс в календаре и привяжет ваш заказ.\n"
-            "Код посадки и QR придут после подтверждения рейса.\n"
+            "Оператор подтвердит поездку и пришлёт билет с QR-кодом.\n"
             "«📞 Связь с админом» — в любой момент."
         )
         await message.answer(caption, reply_markup=keyboards.main_passenger_kb())
@@ -570,8 +706,8 @@ async def passenger_confirm_submit(message: Message, state: FSMContext, bot: Bot
         bot_messages.format_order_summary(order, direction)
         + trip_label
         + "\n\n"
-        "Код и QR отправлены отдельными сообщениями ниже.\n"
-        "«📞 Связь с водителем» — после назначения. «📞 Связь с админом» — в любой момент."
+        "Заявка принята. Оператор подтвердит поездку и пришлёт билет с QR-кодом.\n"
+        "«📞 Связь с водителем» — после подтверждения. «📞 Связь с админом» — в любой момент."
     )
     if trip_id and not scheduled_activated:
         caption += "\n⏳ Заказ в очереди на выбранную дату — водитель назначится ближе к рейсу."
@@ -596,9 +732,6 @@ async def passenger_confirm_submit(message: Message, state: FSMContext, bot: Bot
         extra_kb = keyboards.passenger_pay_inline(order.id)
 
     await message.answer(caption, reply_markup=extra_kb or keyboards.main_passenger_kb())
-    await send_passenger_boarding_credentials(
-        bot, order, code=code, direction=direction
-    )
 
     if order.status == OrderStatus.ADMIN_REVIEW.value:
         from app.services.admin_notify import notify_sos_overflow
@@ -641,9 +774,21 @@ async def passenger_confirm_submit(message: Message, state: FSMContext, bot: Bot
 
 @router.callback_query(F.data.startswith("pay:"))
 async def pay_order(cb: CallbackQuery, bot: Bot) -> None:
-    oid = int(cb.data.split(":")[1])
-    order = Order.get_by_id(oid)
-    result = passenger_payment_service.init_passenger_payment(order)
+    oid = parse_callback_int(cb.data)
+    if oid is None:
+        await cb.answer("Некорректные данные", show_alert=True)
+        return
+    try:
+        order = Order.get_by_id(oid)
+    except Order.DoesNotExist:
+        await cb.answer("Заказ не найден", show_alert=True)
+        return
+    try:
+        result = passenger_payment_service.init_passenger_payment(order)
+    except Exception:
+        await cb.message.answer("Не удалось создать платёж. Попробуйте позже.")
+        await cb.answer()
+        return
     if result.get("awaiting_admin"):
         await cb.message.answer(
             f"Заказ #{oid}: ожидает подтверждения оплаты администратором ({result['payment_id']})."
@@ -660,9 +805,21 @@ async def pay_order(cb: CallbackQuery, bot: Bot) -> None:
 
 @router.callback_query(F.data.startswith("paycheck:"))
 async def pay_check(cb: CallbackQuery) -> None:
-    oid = int(cb.data.split(":")[1])
-    order = Order.get_by_id(oid)
-    status = passenger_payment_service.check_passenger_payment(order)
+    oid = parse_callback_int(cb.data)
+    if oid is None:
+        await cb.answer("Некорректные данные", show_alert=True)
+        return
+    try:
+        order = Order.get_by_id(oid)
+    except Order.DoesNotExist:
+        await cb.answer("Заказ не найден", show_alert=True)
+        return
+    try:
+        status = passenger_payment_service.check_passenger_payment(order)
+    except Exception:
+        await cb.message.answer("Не удалось проверить оплату. Попробуйте позже.")
+        await cb.answer()
+        return
     msgs = {
         "paid": "Оплата подтверждена. Заявка передана в обработку.",
         "pending": "Платёж ещё не прошёл.",
@@ -702,17 +859,15 @@ async def _send_boarding_code_for_user(message: Message, bot: Bot) -> None:
             "Нет активного заказа. Сначала оформите поездку или дождитесь назначения."
         )
         return
-    if not boarding_code_for_order(o):
-        from app.services.boarding_credentials import issue_and_send_new_credentials
-
-        await issue_and_send_new_credentials(bot, o)
-        await message.answer("Сгенерирован новый код (старый QR больше не действует).")
+    if not o.passenger_ticket_sent_at:
+        await message.answer(
+            "Билет с QR-кодом придёт после подтверждения поездки оператором."
+        )
         return
-    ok = await send_passenger_boarding_credentials(bot, o)
-    if ok:
-        await message.answer(f"Код и QR для заказа #{o.id} отправлены выше.")
-    else:
-        await message.answer("Не удалось отправить код. Обратитесь к администратору.")
+    from app.services.boarding_credentials import issue_and_send_new_credentials
+
+    await issue_and_send_new_credentials(bot, o)
+    await message.answer("Код и QR для заказа отправлены выше.")
 
 
 @router.message(F.text == keyboards.BTN_BOARDING_CODE)
@@ -743,7 +898,10 @@ async def passenger_cabinet(message: Message, state: FSMContext, bot: Bot) -> No
         lines.append(
             f"\nАктивный заказ #{active.id}: {d.from_label} → {d.to_label} ({active.status})"
         )
-        lines.append("Для посадки можно получить код и QR кнопкой ниже.")
+        if active.passenger_ticket_sent_at:
+            lines.append("Билет с QR — кнопка «🔐 Код и QR» ниже.")
+        else:
+            lines.append("Ожидайте билет после подтверждения оператором.")
     else:
         lines.append("\nАктивных заказов сейчас нет.")
     if orders:
@@ -752,8 +910,9 @@ async def passenger_cabinet(message: Message, state: FSMContext, bot: Bot) -> No
             d = Direction.get_by_id(o.direction_id)
             lines.append(f"• #{o.id} · {d.from_label} → {d.to_label} · {o.status}")
     await message.answer("\n".join(lines))
-    if active:
+    if active and active.passenger_ticket_sent_at:
         await _send_boarding_code_for_user(message, bot)
+    if active:
         await message.answer(
             "Что хотите изменить?\n"
             "1) Откуда\n2) Куда\n3) Места\n4) Телефон\n5) Дата и время\n\n"
@@ -869,7 +1028,7 @@ def _contactable_order(user) -> Order | None:
             .order_by(Order.id.desc())
             .first()
         )
-        if o:
+        if o and o.passenger_ticket_sent_at:
             return o
     return None
 
@@ -883,7 +1042,7 @@ async def contact_driver(message: Message, state: FSMContext) -> None:
     o = _contactable_order(message.from_user)
     if not o:
         await message.answer(
-            "Нет заказа с назначенным водителем. Связь доступна после назначения."
+            "Связь с водителем доступна после подтверждения поездки оператором."
         )
         return
     from app.models import OrderDriverAssignment, AssignmentStatus, DriverProfile

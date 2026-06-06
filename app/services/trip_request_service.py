@@ -9,7 +9,7 @@ from aiogram import Bot
 from app.config import get_settings
 from app.models import Direction, Order, OrderStatus, PassengerPaymentStatus, User
 from app.models.scheduled_trip import ScheduledTrip
-from app.services import audit_service, code_service, scheduled_trip_service
+from app.services import audit_service, scheduled_trip_service
 from app.util.datetimeutil import utcnow
 from app.util.time_format import format_datetime_display
 
@@ -89,25 +89,22 @@ def fulfill_order_with_trip(order_id: int, trip: ScheduledTrip) -> Order:
 
 
 async def notify_passenger_trip_confirmed(
-    bot: Bot, order: Order, trip: ScheduledTrip, *, code: str
+    bot: Bot, order: Order, trip: ScheduledTrip, *, code: str | None = None
 ) -> None:
+    """Trip linked in calendar — билет с QR придёт после назначения водителя оператором."""
     direction = Direction.get_by_id(order.direction_id)
     dep_label = format_datetime_display(trip.departure_at)
     text = (
         f"✅ Рейс подтверждён · заказ #{order.id}\n"
         f"📍 {direction.from_label} → {direction.to_label}\n"
         f"📅 Выезд: {dep_label}\n\n"
-        "Код посадки и QR — в сообщениях ниже."
+        "Билет с QR-кодом, данными водителя и правилами придёт "
+        "после назначения водителя оператором."
     )
-    if not order.scheduled_activated:
-        text += "\n⏳ Водитель будет назначен ближе к дате рейса."
     try:
         await bot.send_message(order.passenger.telegram_id, text)
     except Exception:
         pass
-    from app.services.boarding_credentials import send_passenger_boarding_credentials
-
-    await send_passenger_boarding_credentials(bot, order, code=code, direction=direction)
 
 
 async def fulfill_and_notify(
@@ -118,10 +115,8 @@ async def fulfill_and_notify(
     actor_telegram_id: Optional[int] = None,
 ) -> Order:
     order = fulfill_order_with_trip(order_id, trip)
-    code = code_service.generate_six_digit_code()
-    code_service.persist_boarding_code(order.id, code)
     order = Order.get_by_id(order.id)
-    await notify_passenger_trip_confirmed(bot, order, trip, code=code)
+    await notify_passenger_trip_confirmed(bot, order, trip)
     audit_service.log_action(
         "trip_request_fulfilled",
         actor_telegram_id=actor_telegram_id,

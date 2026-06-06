@@ -57,6 +57,12 @@ class Settings(BaseSettings):
     queue_default_rest_min: int = 0
 
     driver_offer_url: str = ""
+    passenger_terms_url: str = (
+        "https://docs.google.com/document/d/1mjE42bm2P-RD1up6WpTZUQo_k0TbVW2yA3O1uvauIGg/edit?usp=drivesdk"
+    )
+    passenger_privacy_url: str = (
+        "https://docs.google.com/document/d/1zyp-q7MO6NKd69ajtiu89PP2czA_iF8nE3fa5RWxlxQ/edit?usp=drivesdk"
+    )
     driver_can_create_trips: bool = False
     scheduled_trip_booking_days_ahead: int = 60
 

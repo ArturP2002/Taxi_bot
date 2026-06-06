@@ -203,6 +203,7 @@ class OrderPatchIn(BaseModel):
     pickup_location: Optional[str] = None
     pickup_time_text: Optional[str] = None
     pickup_surcharge: Optional[Decimal] = None
+    dropoff_surcharge: Optional[Decimal] = None
 
 
 class OrderChangeRequestOut(BaseModel):
@@ -478,11 +479,12 @@ async def reassign_order_endpoint(
     except Exception:
         pass
     try:
-        await bot.send_message(
-            o.passenger.telegram_id,
-            bot_messages.format_order_summary(
-                o, d, driver_name=new_drv.full_name, extra=bot_messages.PASSENGER_BOARDING_CHECKLIST
-            ),
+        from app.services.boarding_credentials import send_passenger_trip_ticket
+
+        Order.update(passenger_ticket_sent_at=None).where(Order.id == o.id).execute()
+        o = Order.get_by_id(o.id)
+        await send_passenger_trip_ticket(
+            bot, o, driver=new_drv, direction=d, force=True
         )
     except Exception:
         pass

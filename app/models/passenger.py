@@ -7,6 +7,8 @@ from app.util.datetimeutil import utcnow
 
 class PassengerProfile(BaseModel):
     user = ForeignKeyField(User, unique=True, backref="passenger_profile", on_delete="CASCADE")
+    terms_accepted_at = DateTimeField(null=True)
+    privacy_accepted_at = DateTimeField(null=True)
     created_at = DateTimeField(default=utcnow)
 
     class Meta:

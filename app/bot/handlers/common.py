@@ -7,7 +7,8 @@ from aiogram.types import Message, CallbackQuery, WebAppInfo, InlineKeyboardMark
 
 from app.config import get_settings
 from app.bot import keyboards
-from app.bot.messages import send_passenger_rules, send_driver_rules
+from app.bot.messages import send_driver_rules
+from app.bot.safe_callbacks import parse_callback_int
 from app.bot.users import ensure_user, is_admin
 from app.services import admin_relay
 
@@ -37,7 +38,10 @@ async def handle_driver_mode(message: Message, state: FSMContext) -> None:
 async def handle_passenger_mode(message: Message, state: FSMContext) -> None:
     await state.clear()
     ensure_user(message.from_user)
-    await send_passenger_rules(message, reply_markup=keyboards.main_passenger_kb())
+    await message.answer(
+        "Режим пассажира.",
+        reply_markup=keyboards.main_passenger_kb(),
+    )
 
 
 @router.message(CommandStart())
@@ -82,7 +86,10 @@ async def admin_confirm_suggestion(cb: CallbackQuery, bot: Bot) -> None:
     )
     from app.services import order_service
 
-    aid = int(cb.data.split(":")[1])
+    aid = parse_callback_int(cb.data)
+    if aid is None:
+        await cb.answer("Некорректные данные", show_alert=True)
+        return
     try:
         ass = OrderDriverAssignment.get_by_id(aid)
     except OrderDriverAssignment.DoesNotExist:
@@ -131,9 +138,9 @@ async def admin_confirm_suggestion(cb: CallbackQuery, bot: Bot) -> None:
         pass
 
     try:
-        from app.services.boarding_credentials import notify_passenger_driver_assigned
+        from app.services.boarding_credentials import send_passenger_trip_ticket
 
-        await notify_passenger_driver_assigned(bot, order, driver, d)
+        await send_passenger_trip_ticket(bot, order, driver=driver, direction=d)
     except Exception:
         pass
 
@@ -156,7 +163,10 @@ async def admin_reject_suggestion(cb: CallbackQuery, bot: Bot) -> None:
     from app.services import order_service
     from app.services.admin_notify import notify_suggestion_update
 
-    aid = int(cb.data.split(":")[1])
+    aid = parse_callback_int(cb.data)
+    if aid is None:
+        await cb.answer("Некорректные данные", show_alert=True)
+        return
     try:
         ass = OrderDriverAssignment.get_by_id(aid)
     except OrderDriverAssignment.DoesNotExist:
@@ -167,9 +177,13 @@ async def admin_reject_suggestion(cb: CallbackQuery, bot: Bot) -> None:
         await cb.answer("Предложение уже обработано", show_alert=True)
         return
 
-    next_ass = order_service.reject_suggestion(
-        ass, actor_telegram_id=cb.from_user.id,
-    )
+    try:
+            next_ass = order_service.reject_suggestion(
+            ass, actor_telegram_id=cb.from_user.id,
+        )
+    except ValueError as e:
+        await cb.answer(f"Ошибка: {e}", show_alert=True)
+        return
 
     order = Order.get_by_id(ass.order_id)
     old_driver = DriverProfile.get_by_id(ass.driver_id)

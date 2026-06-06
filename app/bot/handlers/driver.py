@@ -454,10 +454,8 @@ async def go_online_own_seats(message: Message, state: FSMContext) -> None:
     dprof = DriverProfile.get_by_id(dprof.id)
     d = Direction.get_by_id(dprof.direction_id)
     queue_service.enqueue_driver_end(d, dprof)
-    from app.services.direction_pairs import get_reverse_direction
     from app.services import queue_eta_service
 
-    rev = get_reverse_direction(d)
     bal = Decimal(str(dprof.balance))
     lvl = order_service.debt_level(bal)
     msg = "Вы в очереди."
@@ -468,10 +466,6 @@ async def go_online_own_seats(message: Message, state: FSMContext) -> None:
     msg += f"\n{snap.status_label}"
     if eta:
         msg += f"\n⏱ Ваша очередь: {eta.label}"
-        if not eta.is_now:
-            msg += f" (~{eta.loading_at.strftime('%d.%m %H:%M')} UTC)"
-    if rev:
-        msg += f"\n↩ Обратный рейс: {rev.from_label} → {rev.to_label} (после поездки — «🔁 Встать обратно»)."
     if lvl == "restrict":
         msg += " Внимание: высокий долг."
     elif lvl == "warn":
@@ -622,12 +616,6 @@ async def accept(cb: CallbackQuery, state: FSMContext) -> None:
     o = Order.get_by_id(ass.order_id)
     dprof = DriverProfile.get_by_id(ass.driver_id)
     d = Direction.get_by_id(o.direction_id)
-    try:
-        from app.services.boarding_credentials import notify_passenger_driver_assigned
-
-        await notify_passenger_driver_assigned(cb.bot, o, dprof, d)
-    except Exception:
-        pass
     from datetime import datetime, timezone
 
     from app.services.photo_service import new_loading_session_id
