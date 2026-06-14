@@ -1151,6 +1151,7 @@ async def pay_debt(message: Message, state: FSMContext, bot: Bot) -> None:
             description=f"Комиссия водителя #{dprof.id}",
             return_url="https://t.me",
             metadata={"driver_id": dprof.id},
+            customer_phone=dprof.phone,
         )
     except Exception:
         await message.answer("Ошибка при создании платежа. Попробуйте позже.")

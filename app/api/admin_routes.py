@@ -1693,6 +1693,7 @@ def create_payment_intent(driver_id: int, body: CreatePaymentIn) -> Any:
         amount=body.amount,
         description=body.description or f"Комиссия водителя #{drv.id}",
         metadata={"driver_id": drv.id},
+        customer_phone=drv.phone,
     )
     from app.models import PaymentPayerType
 

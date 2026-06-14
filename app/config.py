@@ -41,6 +41,12 @@ class Settings(BaseSettings):
     shop_id: str = ""
     shop_secret_key: str = ""
 
+    # 54-FZ receipt for YooKassa (required when online cash register is enabled in shop)
+    receipt_vat_code: int = 1
+    receipt_payment_mode: str = "full_prepayment"
+    receipt_payment_subject: str = "service"
+    receipt_fallback_email: str = ""
+
     qr_token_ttl_minutes: int = 120
 
     debt_warn: int = 5000

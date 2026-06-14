@@ -34,6 +34,7 @@ def init_passenger_payment(order: Order) -> dict:
         amount=amount,
         description=f"Заказ #{order.id}",
         metadata={"order_id": order.id, "payer": "passenger"},
+        customer_phone=order.phone,
     )
     PaymentRecord.create(
         order=order,
